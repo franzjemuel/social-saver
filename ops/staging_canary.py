@@ -96,7 +96,7 @@ async def queue_roundtrip(db):
                     body = json.loads(body)
                 if message["msg_id"] != msg_id or body.get("job_id") != marker:
                     raise RuntimeError("probe_message_mismatch")
-                archived = await con.fetchval("select pgmq.archive($1,$2)", queue_name, msg_id)
+                archived = await con.fetchval("select pgmq.archive($1::text,$2::bigint)", queue_name, msg_id)
                 if not archived:
                     raise RuntimeError("probe_archive_failed")
             finally:
