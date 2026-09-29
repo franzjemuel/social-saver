@@ -11,10 +11,10 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+from uuid import uuid4
 
 from core.config import settings
 from core.database import Database
-from core.queue import JobQueue
 from core.storage import R2Storage
 
 
@@ -63,43 +63,78 @@ async def database_checks(db):
 
 
 async def queue_roundtrip(db):
-    started=time.monotonic(); q=JobQueue(db.pool,settings.queue_name,30)
-    marker=f"canary-{int(time.time())}"
+    """Probe a private queue in a transaction that is always rolled back.
+
+    Never claim from settings.queue_name: a canary must not hide customer jobs
+    or race the real worker. Transactional DDL removes the queue and its archive
+    on success, failure or connection loss without a persistent cleanup job.
+    """
+    started = time.monotonic()
+    if settings.app_env != "staging":
+        return result("queue_roundtrip", False, "requires APP_ENV=staging", 0)
+    queue_name = f"canary_{uuid4().hex}"
+    marker = str(uuid4())
     try:
-        msg_id=await q.send(marker)
-        # PGMQ API differs by extension version; use queue wrapper's receive path.
-        msgs=await q.claim(qty=10)
-        found=None
-        for msg in msgs:
-            body=msg["message"]
-            if isinstance(body,str):
-                try: body=json.loads(body)
-                except Exception: pass
-            if isinstance(body,dict) and str(body.get("job_id"))==marker:
-                found=msg; break
-        if found is None:
-            return result("queue_roundtrip",False,"canary message not readable",(time.monotonic()-started)*1000)
-        mid=found["msg_id"]
-        if mid is not None: await q.archive(mid)
-        return result("queue_roundtrip",True,"send/read/archive",(time.monotonic()-started)*1000)
+        async with db.pool.acquire() as con:
+            transaction = con.transaction()
+            await transaction.start()
+            try:
+                await con.execute("select pgmq.create($1)", queue_name)
+                msg_id = await con.fetchval(
+                    "select * from pgmq.send($1, $2::jsonb, 0)",
+                    queue_name, json.dumps({"version": 1, "job_id": marker}),
+                )
+                messages = await con.fetch(
+                    "select * from pgmq.read_with_poll($1,$2,$3,5,100)",
+                    queue_name, 30, 1,
+                )
+                if len(messages) != 1:
+                    raise RuntimeError("probe_message_missing")
+                message = messages[0]
+                body = message["message"]
+                if isinstance(body, str):
+                    body = json.loads(body)
+                if message["msg_id"] != msg_id or body.get("job_id") != marker:
+                    raise RuntimeError("probe_message_mismatch")
+                archived = await con.fetchval("select pgmq.archive($1,$2)", queue_name, msg_id)
+                if not archived:
+                    raise RuntimeError("probe_archive_failed")
+            finally:
+                await transaction.rollback()
+        return result("queue_roundtrip", True, "isolated send/read/archive; rolled back", (time.monotonic()-started)*1000)
     except Exception as exc:
-        return result("queue_roundtrip",False,type(exc).__name__,(time.monotonic()-started)*1000)
+        return result("queue_roundtrip", False, type(exc).__name__, (time.monotonic()-started)*1000)
 
 
 async def r2_roundtrip():
-    started=time.monotonic(); key=f"canary/{int(time.time())}.txt"
+    started = time.monotonic()
+    if settings.app_env != "staging":
+        return result("r2_roundtrip", False, "requires APP_ENV=staging", 0)
+    key = f"canary/{uuid4().hex}.txt"
+    storage = None
+    ok = False
+    detail = "probe_failed"
     try:
-        storage=R2Storage(settings.r2_account_id,settings.r2_access_key_id,settings.r2_secret_access_key,settings.r2_bucket,60)
+        storage = R2Storage(settings.r2_account_id,settings.r2_access_key_id,settings.r2_secret_access_key,settings.r2_bucket,60)
         with tempfile.TemporaryDirectory() as td:
-            src=Path(td)/"probe.txt"; dst=Path(td)/"probe.out"
-            src.write_text("social-saver-canary-v2.4",encoding="utf-8")
-            await storage.put_file(src,key,"text/plain")
-            await storage.download_file(key,dst)
-            ok=dst.read_text(encoding="utf-8")=="social-saver-canary-v2.4"
-            await storage.delete(key)
-        return result("r2_roundtrip",ok,"put/get/delete" if ok else "content mismatch",(time.monotonic()-started)*1000)
+            src = Path(td)/"probe.txt"
+            dst = Path(td)/"probe.out"
+            src.write_text("social-saver-canary", encoding="utf-8")
+            await storage.put_file(src, key, "text/plain")
+            await storage.download_file(key, dst)
+            ok = dst.read_text(encoding="utf-8") == "social-saver-canary"
+            detail = "put/get/delete" if ok else "content mismatch"
     except Exception as exc:
-        return result("r2_roundtrip",False,type(exc).__name__,(time.monotonic()-started)*1000)
+        detail = type(exc).__name__
+    finally:
+        if storage is not None:
+            try:
+                # Also clean up if the upload succeeded but its response or GET failed.
+                await storage.delete(key)
+            except Exception as exc:
+                ok = False
+                detail = f"cleanup_failed:{type(exc).__name__}"
+    return result("r2_roundtrip", ok, detail, (time.monotonic()-started)*1000)
 
 
 async def worker_heartbeat(db, max_age=90):
@@ -129,6 +164,8 @@ async def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--json",action="store_true")
     args=parser.parse_args()
+    if settings.app_env != "staging":
+        parser.error("canary requires APP_ENV=staging; no external checks executed")
     checks=[]
     checks.append(await telegram_check())
     db=Database(settings.database_url)

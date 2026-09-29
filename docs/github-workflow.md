@@ -1,6 +1,6 @@
 # GitHub engineering workflow
 
-- Repository: private `franzjemuel/social-saver`; default branch `main`.
+- Repository: public `franzjemuel/social-saver`; default branch `main`.
 - Import provenance: `social-saver-bootstrap-v3.8.zip`, SHA-256
   `c9ef24b7ef600e565dafc5e2a6a12857b7d5ad8c189f9e269f2116b7fa5e7573`.
   The initial commit preserves source files and all migrations; generated Python
@@ -21,9 +21,13 @@ Packaging uses explicit package discovery because this application deliberately
 contains several top-level Python packages. See the
 [setuptools documentation](https://setuptools.pypa.io/en/stable/userguide/package_discovery.html).
 
-## Account-plan limitation
+## Enforced branch protection
 
-GitHub rejected the private-repository branch-protection request with HTTP 403:
-this account needs GitHub Pro (or a public repository) for that feature. The
-repository remains private. The PR/check policy is currently procedural, not
-server-enforced; do not claim protection is enabled.
+The repository was initially private. After GitHub rejected private-repository
+protection on this account's plan, the user authorized public visibility. Gitleaks
+8.30.1 scanned the committed history with no findings before the visibility change.
+
+GitHub now enforces required `test` and `containers` checks, an up-to-date PR branch,
+pull requests, resolved review conversations, and no force pushes or branch
+deletions. Administrators are included. Independent approving reviews are not
+required for this single-owner repository; risky changes still need user review.

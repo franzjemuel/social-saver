@@ -60,3 +60,27 @@ Use the persistent GitHub repository as source of truth, run `python scripts/sta
 - First GitHub run passed all 88 tests but exposed a Compose-version difference:
   `.env` was still required despite `--no-env-resolution`. Verification now selects
   `.env.example` explicitly via a Compose environment-file override.
+
+
+## Iteration 2 — isolated staging canary (review branch)
+
+- Build/workflow PR #1 merged after GitHub passed 88 tests, wheel verification,
+  all three Linux container builds, service imports and FFmpeg availability.
+- Isolated queue probe uses a private UUID-named queue and unconditional database
+  rollback; no claims from media_jobs. R2 uses unique keys and failure cleanup.
+- Refuses non-staging execution before network checks. Offline readiness output
+  now explicitly states that hosted services have not been verified.
+- 99 tests pass locally, including 11 canary safety regression cases; compile,
+  readiness and Compose pass. Hosted queue/storage checks remain unrun.
+- User explicitly paused Railway provisioning to finish GitHub first. No staging
+  project or service was created; do not resume provisioning without user steering.
+- Next runtime priority remains database JSON serialization and a real PGMQ/worker
+  integration test, before provisioning and real Instagram delivery.
+
+## Repository visibility and protection
+
+The user authorized making the repository public to enable branch protection.
+Gitleaks 8.30.1 found no secrets in committed history before publication. Repository
+is now public; main requires passing test/container checks and a PR, including for
+admins, and disallows force pushes/deletions. This supersedes the earlier private
+repository plan limitation.
