@@ -21,7 +21,7 @@ class JobQueue:
     async def archive(self, msg_id: int):
         async with self.pool.acquire() as con:
             return await con.fetchval(
-                "select pgmq.archive($1,$2)", self.queue_name, msg_id
+                "select pgmq.archive($1::text,$2::bigint)", self.queue_name, msg_id
             )
 
     async def extend_visibility(self, msg_id: int, seconds: int):
