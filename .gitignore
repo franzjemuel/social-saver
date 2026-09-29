@@ -1,4 +1,12 @@
 .env
+.env.*
+!.env.example
+*.egg-info/
+*.pem
+*.key
+credentials*.json
+cookies*.txt
+sessions/
 .venv/
 __pycache__/
 .pytest_cache/
