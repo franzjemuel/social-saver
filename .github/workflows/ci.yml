@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -18,12 +22,13 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install project and test dependencies
         run: python -m pip install -e '.[dev]'
-      - name: Compile
-        run: python -m compileall -q .
-      - name: Test
-        run: python -m pytest -q
+      - name: Verify source, tests, readiness and Compose
+        run: ./scripts/verify.sh
+      - name: Verify installed wheel outside source checkout
+        run: ./scripts/check-package.sh
 
   containers:
     runs-on: ubuntu-latest
@@ -36,3 +41,12 @@ jobs:
         run: docker build -t social-saver-worker:ci -f Dockerfile.worker .
       - name: Build Mini App API image
         run: docker build -t social-saver-api:ci -f Dockerfile.api .
+      - name: Import deployed services without network or real credentials
+        run: |
+          for service in bot worker api; do
+            docker run --rm --network none \
+              -e TELEGRAM_BOT_TOKEN=123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi \
+              -e DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
+              "social-saver-${service}:ci" python -c "import apps.${service}.main"
+          done
+          docker run --rm --network none social-saver-worker:ci ffmpeg -version

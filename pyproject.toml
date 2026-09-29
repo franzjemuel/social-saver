@@ -1,3 +1,10 @@
+[build-system]
+requires = ["setuptools>=77,<85"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["apps", "apps.*", "core", "core.*", "providers", "providers.*", "ops", "ops.*"]
+
 [project]
 name = "social-saver"
 version = "3.3.0"

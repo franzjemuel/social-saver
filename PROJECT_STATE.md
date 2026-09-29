@@ -33,3 +33,25 @@ Use the persistent GitHub repository as source of truth, run `python scripts/sta
 - Bot now explicitly fails staging validation if R2/provider credentials are injected; API fails if Instagram/session-vault credentials are injected.
 - Added Railway acceptance contract in `docs/least-privilege-secrets-v38.md`.
 - Next gate remains external staging provisioning and the real Instagram canary.
+
+## GitHub takeover — 2026-09-28
+
+- Imported the user-supplied v3.8 archive, not v3.1. All 20 migrations match the
+  archive byte-for-byte. Preserved original release narrative in bootstrap history.
+- Baseline failed editable installation: setuptools rejected multiple top-level
+  packages. Added explicit build/package configuration; service imports now pass.
+- Baseline tests: 87 passed, 1 stale authentication-name assertion failed. Replaced
+  it with checks of every registered customer route's auth dependency and input
+  schemas. Current tests: 88 passed on Python 3.13.
+- Compile, AST, offline readiness and secret-free Compose validation pass.
+- Consolidated duplicate CI workflows, included wheel/container import checks,
+  restored executable scripts and excluded local secrets from build contexts.
+- Local Docker builds attempted for all images; blocked because Docker engine is
+  unavailable. GitHub container results are required before merging this branch.
+- Hosted resources and credentials remain unidentified; no deployment occurred.
+- Next runtime increments: isolated staging canary, then real Postgres JSON/PGMQ
+  validation. See docs/staging-handoff.md before any online canary.
+
+- Private GitHub repository created: https://github.com/franzjemuel/social-saver.
+- Installed wheel imports pass outside the source checkout in a clean environment.
+- User confirmed staging resources do not exist yet.

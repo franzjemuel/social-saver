@@ -1,7 +1,7 @@
 # Backlog
 
 ## P0 launch blockers
-- [ ] Put current project in persistent GitHub repository.
+- [x] Create private persistent GitHub repository (`franzjemuel/social-saver`).
 - [ ] Provision staging Telegram bot/token.
 - [ ] Provision Postgres/Supabase + PGMQ.
 - [ ] Provision private R2 + least-privilege API/worker credentials.
@@ -36,3 +36,13 @@
 - [x] Add GitHub-to-Railway config-as-code and build all three service images in CI (v3.7).
 
 - [x] Enforce per-service least-privilege secret boundaries with a strict deployment gate (v3.8).
+
+## Takeover findings (2026-09-28)
+
+- [x] Repair package discovery that blocked every pip/container build.
+- [x] Replace stale auth function-name assertion with actual route dependency checks.
+- [x] Consolidate CI and add installed-wheel/container import verification.
+- [ ] Isolate the staging canary from media_jobs and ensure probe cleanup.
+- [ ] Verify/fix Postgres JSON codecs with real database round-trip tests.
+- [ ] Confirm hosted staging identifiers and secrets via hosting secret stores.
+- [ ] Pin a tested dependency resolution for repeatable staging releases.

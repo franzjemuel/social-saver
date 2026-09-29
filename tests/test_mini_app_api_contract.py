@@ -1,4 +1,6 @@
 from pathlib import Path
+from fastapi.routing import APIRoute
+from apps.api.main import app, current_identity
 
 ROOT = Path(__file__).parents[1]
 API = (ROOT / "apps/api/main.py").read_text()
@@ -6,10 +8,15 @@ DOCKER = (ROOT / "Dockerfile.api").read_text()
 
 
 def test_api_never_accepts_browser_user_id_parameter():
-    assert "Depends(current_user_id)" in API
-    assert "verify_telegram_init_data" in API
-    assert "app_user_id: " not in API
-    assert "app_user_id=" not in API
+    routes = [r for r in app.routes if isinstance(r, APIRoute) and r.path.startswith('/v1/')]
+    assert routes
+    for route in routes:
+        assert current_identity in [d.call for d in route.dependant.dependencies], route.path
+        supplied = route.dependant.query_params + route.dependant.path_params + route.dependant.body_params
+        assert not {p.name for p in supplied} & {'app_user_id', 'user_id', 'telegram_user_id'}
+    schema = app.openapi()
+    for model in schema['components']['schemas'].values():
+        assert not set(model.get('properties', {})) & {'app_user_id', 'user_id', 'telegram_user_id'}
 
 
 def test_initial_customer_endpoints_exist():

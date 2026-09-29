@@ -1,0 +1,15 @@
+.git
+.venv
+.env
+.env.*
+**/__pycache__
+.pytest_cache
+*.egg-info
+build
+dist
+*.log
+*.pem
+*.key
+credentials*.json
+cookies*.txt
+sessions
