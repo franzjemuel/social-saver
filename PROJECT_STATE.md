@@ -96,7 +96,19 @@ repository plan limitation.
 - Added a disposable real Postgres/PGMQ gate for migration replay, codecs, tenant
   job lookup, dead letters, canary rollback and the actual worker's test-job path.
 - Local: 99 tests passed, 5 database tests skipped; compilation and migration
-  integrity checks passed. Local Docker daemon probes time out; hosted CI pending.
+  integrity checks passed. All three local Docker builds timed out waiting for
+  the daemon. A clean installed-wheel check failed locally because the disk is full.
+- GitHub run 36576459256 at 8d83d57 passed the test job (including installed-wheel
+  verification) and all three container builds. The new integration job failed:
+  migration 011 attempts to DROP INDEX for a UNIQUE constraint owned by watches.
+  Migration replay reached 010; none of the five integration test bodies ran.
+- Migration 011 contains a second equivalent constraint-index drop for
+  watch_deliveries. Proposed fix: drop both constraints via ALTER TABLE instead.
+  No migration edits applied: awaiting an explicit exception to AGENTS.md's
+  imported-migration immutability rule. A later migration cannot unblock fresh
+  replay because execution stops at 011.
+- PR #4 is open against PR #2's branch; the real queue/worker round trip remains
+  unproven. No merge or production deployment occurred.
 - No v3.9–v3.11 provisioning/release-plan files exist in fetched GitHub branches.
   Do not substitute an older ZIP or claim that absent tooling was executed.
 - No new hosted resources, secrets, deployments or real Instagram/Telegram/R2

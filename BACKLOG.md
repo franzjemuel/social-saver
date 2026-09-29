@@ -54,5 +54,9 @@
 
 - [x] Implement per-connection JSON codecs and serialized-canary compatibility.
 - [x] Add a real disposable Postgres/PGMQ/worker integration gate to CI.
-- [ ] Verify the new gate in CI and review the stacked PR after PR #2.
+- [ ] Unblock migration 011 fresh replay: two DROP INDEX statements target UNIQUE
+  constraints. Proposed ALTER TABLE DROP CONSTRAINT fix awaits explicit permission
+  to amend the imported migration; no migration changes applied.
+- [ ] Pass the real integration gate (run 36576459256 failed at migration 011),
+  prove the queue/worker round trip, and review stacked PR #4 after PR #2.
 - [ ] Complete hosted service provisioning and the authorized Reel acceptance test.

@@ -28,7 +28,7 @@ It never reads the application's DATABASE_URL. Tests refuse non-loopback DSNs,
 a database name other than social_saver_test, or an already-initialized database.
 pg_cron is installed but dispatch scheduling is disabled during tests.
 
-The gate proves:
+The gate is designed to verify (not yet proven by a passing run):
 
 - The unconfigured driver rejects the actual dictionary heartbeat write.
 - json/jsonb values survive every pool connection and a replaced connection.
@@ -51,3 +51,19 @@ Instagram extraction, Telegram delivery, R2 behavior or full staging E2E.
 
 This branch is based on open PR #2. Review/merge #2 first, then retarget this PR
 to main and require all three CI jobs (`test`, `containers`, `integration`).
+
+## Executed evidence — 2026-09-29
+
+GitHub run [36576459256](https://github.com/franzjemuel/social-saver/actions/runs/36576459256)
+at commit 8d83d57 passed the existing test/wheel and container jobs. The disposable
+database built and started, but migration replay failed at 011: PostgreSQL refuses
+to drop an index owned by a UNIQUE constraint. Both constraint-index drops in that
+migration need correction before fresh replay can complete. No migration was
+changed; the repository's immutable-migration instruction requires an explicit
+exception before applying the proposed correction. None of the five integration
+test bodies executed, so no real worker round-trip success is claimed.
+
+Locally, 99 tests and compilation/offline checks passed; five database tests were
+skipped. All three container builds timed out because the Docker daemon did not
+respond. The separate installed-wheel check failed because the local disk was
+full; the corresponding GitHub check passed. No hosted staging test occurred.
