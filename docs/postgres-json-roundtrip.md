@@ -67,3 +67,8 @@ Locally, 99 tests and compilation/offline checks passed; five database tests wer
 skipped. All three container builds timed out because the Docker daemon did not
 respond. The separate installed-wheel check failed because the local disk was
 full; the corresponding GitHub check passed. No hosted staging test occurred.
+
+Update: Franz approved the migration exception on 2026-09-29. Both constraint
+drops in migration 011 are now corrected. Local verification passed (99 tests,
+five database tests skipped); real replay and worker success remain pending CI
+on the correction. Earlier failure evidence above describes the pre-fix commit.

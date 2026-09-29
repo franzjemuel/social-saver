@@ -113,3 +113,25 @@ repository plan limitation.
   Do not substitute an older ZIP or claim that absent tooling was executed.
 - No new hosted resources, secrets, deployments or real Instagram/Telegram/R2
   acceptance tests. Public GitHub visibility remains as explicitly authorized.
+
+## Approved migration correction and handoff — 2026-09-29
+
+- Franz explicitly approved the exception to imported-migration immutability.
+  Migration 011 now drops the two UNIQUE constraints with ALTER TABLE instead
+  of attempting to drop their backing indexes. All other migrations unchanged.
+- After the correction, local verification passed: 99 tests, compilation, AST,
+  migration-chain 001–020 and offline Compose/readiness checks. Five real-database
+  tests skipped. Initial sandbox run blocked localhost sockets; approved retry
+  passed. No real database replay or external delivery has passed yet.
+- Next action: check CI on this correction in PR #4; fix any genuine replay or
+  worker integration failures before staging deployment. Prior green test/build
+  results do not establish success for this new commit.
+- Continue from branch fix/postgres-json-roundtrip in the GitHub repository,
+  not ZIPs. PR #4 is stacked on PR #2. Do not merge or deploy production.
+- Staging resources are not provisioned. Once integration passes, establish
+  dedicated Railway/Supabase/R2/Telegram/Instagram staging resources using
+  existing deployment tooling and per-service secret separation. Never paste
+  tokens or sessions into chat. First milestone remains a real public Reel
+  delivered through Telegram; Live stays disabled.
+- Franz requests one step at a time and an immediate stop when authorization
+  is needed, without repeated polling while blocked.
