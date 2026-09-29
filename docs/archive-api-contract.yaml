@@ -1,0 +1,12 @@
+openapi: 3.1.0
+info: {title: Social Saver Archive API, version: 0.1.0}
+paths:
+  /v1/archive:
+    get: {summary: List authenticated user's archive, security: [{sessionBearer: []}]}
+  /v1/archive/{entry_id}/download:
+    post: {summary: Create short-lived authorized download URLs, security: [{sessionBearer: []}]}
+  /v1/archive/{entry_id}:
+    delete: {summary: Delete owned archive entry, security: [{sessionBearer: []}]}
+components:
+  securitySchemes:
+    sessionBearer: {type: http, scheme: bearer, bearerFormat: opaque}

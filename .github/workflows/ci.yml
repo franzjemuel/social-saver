@@ -1,0 +1,38 @@
+name: Social Saver CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install project and test dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Compile
+        run: python -m compileall -q .
+      - name: Test
+        run: python -m pytest -q
+
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Telegram bot image
+        run: docker build -t social-saver-bot:ci -f Dockerfile .
+      - name: Build worker image
+        run: docker build -t social-saver-worker:ci -f Dockerfile.worker .
+      - name: Build Mini App API image
+        run: docker build -t social-saver-api:ci -f Dockerfile.api .

@@ -1,0 +1,8 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+watchPatterns = ["/apps/bot/**", "/core/**", "/providers/**", "/pyproject.toml", "/Dockerfile", "/railway.bot.toml"]
+
+[deploy]
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

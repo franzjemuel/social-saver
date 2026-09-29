@@ -1,0 +1,21 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m apps.bot.main
+    env_file: .env
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: python -m apps.worker.main
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - live_tmp:/tmp/social-saver-live
+
+volumes:
+  live_tmp:

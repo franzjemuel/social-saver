@@ -1,0 +1,1 @@
+Future Lovable dashboard: use Telegram's current Login/OIDC flow. Verify Telegram ID tokens server-side, enforce state/nonce/freshness, then issue our own short-lived session. Lovable remains UI only.

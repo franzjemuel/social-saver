@@ -1,0 +1,1 @@
+alter table live_sessions add column if not exists final_storage_key text, add column if not exists final_size_bytes bigint, add column if not exists finalized_at timestamptz, add column if not exists finalize_status text not null default 'pending', add column if not exists finalize_error text;
