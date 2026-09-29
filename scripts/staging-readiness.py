@@ -67,7 +67,7 @@ def main() -> None:
         for item in report["checks"]:
             print(("PASS" if item["ok"] else "FAIL"), item["check"], "-", item["detail"])
         print(f"LATEST MIGRATION {report['latest_migration']:03d}" if report["latest_migration"] else "LATEST MIGRATION none")
-        print("READY FOR ONLINE CANARY" if report["ok"] else "NOT READY")
+        print("OFFLINE CONTRACTS PASS; HOSTED SERVICES NOT VERIFIED" if report["ok"] else "NOT READY")
     raise SystemExit(0 if report["ok"] else 1)
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 # Backlog
 
 ## P0 launch blockers
-- [x] Create private persistent GitHub repository (`franzjemuel/social-saver`).
+- [x] Create persistent GitHub repository (`franzjemuel/social-saver`).
 - [ ] Provision staging Telegram bot/token.
 - [ ] Provision Postgres/Supabase + PGMQ.
 - [ ] Provision private R2 + least-privilege API/worker credentials.
@@ -42,7 +42,10 @@
 - [x] Repair package discovery that blocked every pip/container build.
 - [x] Replace stale auth function-name assertion with actual route dependency checks.
 - [x] Consolidate CI and add installed-wheel/container import verification.
-- [ ] Isolate the staging canary from media_jobs and ensure probe cleanup.
+- [x] Implement isolated staging canary and probe cleanup on a review branch.
+- [ ] Merge canary isolation after review and validate against hosted PGMQ/R2.
 - [ ] Verify/fix Postgres JSON codecs with real database round-trip tests.
 - [ ] Confirm hosted staging identifiers and secrets via hosting secret stores.
 - [ ] Pin a tested dependency resolution for repeatable staging releases.
+
+- [x] Publish repository with user authorization and enable enforced main-branch protection.

@@ -9,9 +9,9 @@ provided for this takeover. No real deployment or end-to-end delivery is claimed
 ## Before running a hosted canary
 
 1. Pass GitHub tests and all three container builds.
-2. Repair the canary's queue isolation: the inherited implementation sends a
-   non-UUID marker to `media_jobs`, races the worker, and can claim customer jobs.
-   Do not execute it on a queue with a running worker until repaired.
+2. Review and merge the isolated-canary PR before the hosted run. The probe uses
+   a transaction-scoped private queue and requires `APP_ENV=staging`; see
+   [canary isolation](staging-canary-isolation.md). Confirm rollback on real PGMQ.
 3. Verify database JSON/JSONB serialization against real Postgres/PGMQ. The current
    pool has no JSON codec initialization even though callers send dictionaries
    and treat returned JSON as dictionaries. Static tests cannot prove this works.
