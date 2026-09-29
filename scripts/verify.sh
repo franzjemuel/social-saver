@@ -10,5 +10,5 @@ for f in Path("apps").rglob("*.py"):
 print("AST verification passed")
 PY
 python scripts/staging-readiness.py
-docker compose --env-file .env.example config --no-env-resolution >/dev/null
+SOCIAL_SAVER_ENV_FILE=.env.example docker compose --env-file .env.example config >/dev/null
 echo "Static verification passed"

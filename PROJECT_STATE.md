@@ -55,3 +55,8 @@ Use the persistent GitHub repository as source of truth, run `python scripts/sta
 - Private GitHub repository created: https://github.com/franzjemuel/social-saver.
 - Installed wheel imports pass outside the source checkout in a clean environment.
 - User confirmed staging resources do not exist yet.
+- GitHub private-repository branch protection was rejected by the account plan
+  (HTTP 403); PR/check policy is procedural until an eligible plan is available.
+- First GitHub run passed all 88 tests but exposed a Compose-version difference:
+  `.env` was still required despite `--no-env-resolution`. Verification now selects
+  `.env.example` explicitly via a Compose environment-file override.

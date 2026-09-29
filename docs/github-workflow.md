@@ -20,3 +20,10 @@
 Packaging uses explicit package discovery because this application deliberately
 contains several top-level Python packages. See the
 [setuptools documentation](https://setuptools.pypa.io/en/stable/userguide/package_discovery.html).
+
+## Account-plan limitation
+
+GitHub rejected the private-repository branch-protection request with HTTP 403:
+this account needs GitHub Pro (or a public repository) for that feature. The
+repository remains private. The PR/check policy is currently procedural, not
+server-enforced; do not claim protection is enabled.
