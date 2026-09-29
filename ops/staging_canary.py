@@ -81,7 +81,7 @@ async def queue_roundtrip(db):
             try:
                 await con.execute("select pgmq.create($1)", queue_name)
                 msg_id = await con.fetchval(
-                    "select * from pgmq.send($1, $2::jsonb, 0)",
+                    "select * from pgmq.send($1, $2::text::jsonb, 0)",
                     queue_name, json.dumps({"version": 1, "job_id": marker}),
                 )
                 messages = await con.fetch(

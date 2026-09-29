@@ -49,3 +49,10 @@
 - [ ] Pin a tested dependency resolution for repeatable staging releases.
 
 - [x] Publish repository with user authorization and enable enforced main-branch protection.
+
+## Issue #3 execution
+
+- [x] Implement per-connection JSON codecs and serialized-canary compatibility.
+- [x] Add a real disposable Postgres/PGMQ/worker integration gate to CI.
+- [ ] Verify the new gate in CI and review the stacked PR after PR #2.
+- [ ] Complete hosted service provisioning and the authorized Reel acceptance test.

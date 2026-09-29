@@ -84,3 +84,20 @@ Gitleaks 8.30.1 found no secrets in committed history before publication. Reposi
 is now public; main requires passing test/container checks and a PR, including for
 admins, and disallows force pushes/deletions. This supersedes the earlier private
 repository plan limitation.
+
+## Issue #3 — Postgres JSON round-trip (2026-09-29, work in progress)
+
+- Working only from /Users/franz/Documents/GitHub/social-saver. Clean local main
+  matched GitHub at d1d8c37 before editing; PR #2 remains open at 9b188a8 with green CI.
+- Reviewed PR #2 and based fix/postgres-json-roundtrip on its head, so its serialized
+  canary payload can be adapted with the database codec fix. Neither PR was merged.
+- Applied per-connection json/jsonb codecs and an explicit text cast for the
+  canary's pre-encoded JSON. No migrations or application feature logic changed.
+- Added a disposable real Postgres/PGMQ gate for migration replay, codecs, tenant
+  job lookup, dead letters, canary rollback and the actual worker's test-job path.
+- Local: 99 tests passed, 5 database tests skipped; compilation and migration
+  integrity checks passed. Local Docker daemon probes time out; hosted CI pending.
+- No v3.9–v3.11 provisioning/release-plan files exist in fetched GitHub branches.
+  Do not substitute an older ZIP or claim that absent tooling was executed.
+- No new hosted resources, secrets, deployments or real Instagram/Telegram/R2
+  acceptance tests. Public GitHub visibility remains as explicitly authorized.
