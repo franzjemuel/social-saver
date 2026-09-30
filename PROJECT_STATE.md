@@ -27,8 +27,11 @@ Updated 2026-09-30 UTC (2026-09-29 America/New_York).
 - The unintended sandbox 21b4117a-b6ac-443a-bebf-67c8d7a00e98 is confirmed
   Destroyed; dashboard shows zero active sandboxes. User approved cleanup.
   Trial consumption from the accidental creation has not been quantified.
-- Supabase dashboard requires sign-in; no database has been provisioned in this
-  run. R2, Telegram and Instagram staging resources remain unverified.
+- User reports Supabase project mnwlqeeksruyuvqowrdq is healthy, confirms
+  @socialsaverapp_bot is a test bot, and has the Instagram staging account ready.
+  Database migrations/PGMQ, credentials and real delivery remain unverified.
+  See docs/staging-setup-checklist.md for the resource and service handoff.
+  R2 remains unprovisioned/unverified.
 - User approved pausing the duplicate four-hour engineering automation;
   continue-social-saver-engineering is now PAUSED.
 - Documentation PR #5 initial commit 88677ae passed all three CI jobs in run

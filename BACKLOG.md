@@ -2,7 +2,8 @@
 
 ## P0 launch blockers
 - [x] Create persistent GitHub repository (`franzjemuel/social-saver`).
-- [ ] Provision staging Telegram bot/token.
+- [x] Identify staging test bot: @socialsaverapp_bot (user confirmed).
+- [ ] Configure and validate staging Telegram token in service secret stores.
 - [ ] Provision Postgres/Supabase + PGMQ.
 - [ ] Provision private R2 + least-privilege API/worker credentials.
 - [ ] Provision Railway bot/API/worker. Config-as-code is ready in v3.7; external project/service creation remains.
@@ -64,5 +65,6 @@
 - [x] Confirm unintended Railway sandbox is Destroyed (zero active sandboxes).
 - [x] Establish private Railway project social-saver-staging and staging environment.
 - [x] Pause duplicate engineering automation with user approval.
-- [ ] Sign into Supabase and provision the dedicated staging database.
+- [x] User created healthy Supabase project mnwlqeeksruyuvqowrdq.
+- [ ] Verify hosted connectivity, migrations and PGMQ.
 - [ ] Complete hosted service provisioning and the authorized Reel acceptance test.
