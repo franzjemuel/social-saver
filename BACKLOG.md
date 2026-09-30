@@ -49,3 +49,14 @@
 - [ ] Pin a tested dependency resolution for repeatable staging releases.
 
 - [x] Publish repository with user authorization and enable enforced main-branch protection.
+
+## Issue #3 execution
+
+- [x] Implement per-connection JSON codecs and serialized-canary compatibility.
+- [x] Add a real disposable Postgres/PGMQ/worker integration gate to CI.
+- [x] Apply user-approved migration 011 correction: replace two constraint-index
+  drops with ALTER TABLE DROP CONSTRAINT. Local verification passed; actual
+  database replay still requires a passing integration run.
+- [ ] Pass the real integration gate (run 36576459256 failed at migration 011),
+  prove the queue/worker round trip, and review stacked PR #4 after PR #2.
+- [ ] Complete hosted service provisioning and the authorized Reel acceptance test.

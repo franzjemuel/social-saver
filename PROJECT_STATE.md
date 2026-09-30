@@ -84,3 +84,54 @@ Gitleaks 8.30.1 found no secrets in committed history before publication. Reposi
 is now public; main requires passing test/container checks and a PR, including for
 admins, and disallows force pushes/deletions. This supersedes the earlier private
 repository plan limitation.
+
+## Issue #3 — Postgres JSON round-trip (2026-09-29, work in progress)
+
+- Working only from /Users/franz/Documents/GitHub/social-saver. Clean local main
+  matched GitHub at d1d8c37 before editing; PR #2 remains open at 9b188a8 with green CI.
+- Reviewed PR #2 and based fix/postgres-json-roundtrip on its head, so its serialized
+  canary payload can be adapted with the database codec fix. Neither PR was merged.
+- Applied per-connection json/jsonb codecs and an explicit text cast for the
+  canary's pre-encoded JSON. No migrations or application feature logic changed.
+- Added a disposable real Postgres/PGMQ gate for migration replay, codecs, tenant
+  job lookup, dead letters, canary rollback and the actual worker's test-job path.
+- Local: 99 tests passed, 5 database tests skipped; compilation and migration
+  integrity checks passed. All three local Docker builds timed out waiting for
+  the daemon. A clean installed-wheel check failed locally because the disk is full.
+- GitHub run 36576459256 at 8d83d57 passed the test job (including installed-wheel
+  verification) and all three container builds. The new integration job failed:
+  migration 011 attempts to DROP INDEX for a UNIQUE constraint owned by watches.
+  Migration replay reached 010; none of the five integration test bodies ran.
+- Migration 011 contains a second equivalent constraint-index drop for
+  watch_deliveries. Proposed fix: drop both constraints via ALTER TABLE instead.
+  No migration edits applied: awaiting an explicit exception to AGENTS.md's
+  imported-migration immutability rule. A later migration cannot unblock fresh
+  replay because execution stops at 011.
+- PR #4 is open against PR #2's branch; the real queue/worker round trip remains
+  unproven. No merge or production deployment occurred.
+- No v3.9–v3.11 provisioning/release-plan files exist in fetched GitHub branches.
+  Do not substitute an older ZIP or claim that absent tooling was executed.
+- No new hosted resources, secrets, deployments or real Instagram/Telegram/R2
+  acceptance tests. Public GitHub visibility remains as explicitly authorized.
+
+## Approved migration correction and handoff — 2026-09-29
+
+- Franz explicitly approved the exception to imported-migration immutability.
+  Migration 011 now drops the two UNIQUE constraints with ALTER TABLE instead
+  of attempting to drop their backing indexes. All other migrations unchanged.
+- After the correction, local verification passed: 99 tests, compilation, AST,
+  migration-chain 001–020 and offline Compose/readiness checks. Five real-database
+  tests skipped. Initial sandbox run blocked localhost sockets; approved retry
+  passed. No real database replay or external delivery has passed yet.
+- Next action: check CI on this correction in PR #4; fix any genuine replay or
+  worker integration failures before staging deployment. Prior green test/build
+  results do not establish success for this new commit.
+- Continue from branch fix/postgres-json-roundtrip in the GitHub repository,
+  not ZIPs. PR #4 is stacked on PR #2. Do not merge or deploy production.
+- Staging resources are not provisioned. Once integration passes, establish
+  dedicated Railway/Supabase/R2/Telegram/Instagram staging resources using
+  existing deployment tooling and per-service secret separation. Never paste
+  tokens or sessions into chat. First milestone remains a real public Reel
+  delivered through Telegram; Live stays disabled.
+- Franz requests one step at a time and an immediate stop when authorization
+  is needed, without repeated polling while blocked.

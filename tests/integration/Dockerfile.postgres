@@ -1,0 +1,6 @@
+FROM ghcr.io/pgmq/pg18-pgmq:v1.10.0
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-18-cron \
+    && rm -rf /var/lib/apt/lists/*
+USER postgres
+CMD ["postgres", "-c", "shared_preload_libraries=pg_cron", "-c", "cron.database_name=social_saver_test", "-c", "cron.launch_active_jobs=off"]
