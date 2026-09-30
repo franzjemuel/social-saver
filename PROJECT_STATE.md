@@ -1,6 +1,53 @@
 # Project state
 
-Updated for v3.8.
+Updated 2026-09-30 UTC (2026-09-29 America/New_York).
+
+## Current verified status (supersedes historical entries below)
+
+- Hosted database release completed 2026-09-30 using the authenticated official
+  Supabase CLI v2.118.0 and existing scripts/staging-db-release.sh, targeting
+  mnwlqeeksruyuvqowrdq only. Reviewed dry-run listed exactly 001–020; all applied.
+  Remote migration list matches all 20 local versions. Read-only query confirmed
+  pgcrypto, pgmq and pg_cron, media_jobs and dead_letter_jobs queues, zero jobs
+  and zero users. No application deployment or delivery success is implied.
+- CLI link works without a committed supabase/config.toml. Local supabase/.temp/
+  metadata is excluded via .git/info/exclude and must not be committed.
+- User reports saving per-service database, Telegram, R2 and worker Instagram
+  variables. SESSION_MASTER_KEY placement and hosted environment validation
+  remain to be confirmed. Next gate is Railway configuration and deployment.
+
+- PR #2 and PR #4 are merged. PR #4 head was
+  614a76e8c83ea9bd5440f619d2e88e6e0906c383; its final run 36665622112 passed
+  test, containers and integration. Merge commit is
+  dacf421f145c74d208f1e9c0e69a4a0a42e47248.
+- Merged-main run https://github.com/franzjemuel/social-saver/actions/runs/36665893782
+  passed test, installed-wheel imports, all three container builds and the real
+  disposable Postgres/PGMQ worker gate. This proves the test-job path, not
+  Instagram extraction, Telegram delivery or hosted Supabase/R2 behavior.
+- The clean local clone was fast-forwarded to GitHub main, preserving remote
+  edits. No open PRs or issues were returned before this documentation update.
+- Local ./scripts/verify.sh passed: 99 tests, five database tests skipped,
+  compile/AST, migration chain 001–020, readiness and Compose validation.
+  Docker builds were not retried; merged-main CI is the build authority.
+- Main protection requires test and containers, strict up-to-date checks and PRs,
+  including admins. Integration passed but is not yet a required protected check.
+- User now authorizes continuing staging provisioning, superseding the earlier
+  pause. No paid plan or production deployment is authorized.
+- Railway project social-saver-staging now exists, private, with environment
+  staging. Project ID: 6627caf4-e1eb-4a0a-95d8-c890477ea521; environment ID:
+  a5aa545f-ea60-45a2-b7d8-dd3136b9bb3d. No application services deployed.
+- The unintended sandbox 21b4117a-b6ac-443a-bebf-67c8d7a00e98 is confirmed
+  Destroyed; dashboard shows zero active sandboxes. User approved cleanup.
+  Trial consumption from the accidental creation has not been quantified.
+- User reports Supabase project mnwlqeeksruyuvqowrdq is healthy, confirms
+  @socialsaverapp_bot is a test bot, and has the Instagram staging account ready.
+  Database migrations/PGMQ, credentials and real delivery remain unverified.
+  See docs/staging-setup-checklist.md for the resource and service handoff.
+  R2 remains unprovisioned/unverified.
+- User approved pausing the duplicate four-hour engineering automation;
+  continue-social-saver-engineering is now PAUSED.
+- Documentation PR #5 initial commit 88677ae passed all three CI jobs in run
+  36666649070. No application code changed in this documentation follow-up.
 
 ## Completed
 Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; private R2 archive; separate bot/API/worker services; server-validated Telegram Mini App auth; tenant-scoped reads; shared save pipeline; idempotency/job status; archive browse/detail/download; entitlements/Stars; Saved Friends/story polling; rate limits/monitoring; session vault; Live reliability/security foundations; Railway staging scaffolding; CI/release gates; executable offline staging readiness report with migration floor 020 and service-specific secret boundaries; tenant-safe asynchronous archive deletion with worker-owned R2 cleanup; full asynchronous account deletion with immediate watch/archive disablement and shared-object-safe R2 purge.
