@@ -135,3 +135,24 @@ repository plan limitation.
   delivered through Telegram; Live stays disabled.
 - Franz requests one step at a time and an immediate stop when authorization
   is needed, without repeated polling while blocked.
+
+## Hosted Reel failure and authenticated fallback — 2026-09-30
+
+- Staging Supabase mnwlqeeksruyuvqowrdq has migrations 001–020 applied and verified
+  through the existing release script; pgmq/pg_cron/pgcrypto and both queues exist.
+- Railway services initially ran the default bot Dockerfile. The worker logs
+  showed duplicate Telegram polling, with no database worker heartbeat. Railway
+  says new services cannot opt into legacy Config as Code since 2026-08-28;
+  use explicit Dockerfile.worker, Dockerfile.api and Dockerfile build settings.
+- After user rebuilt worker/API, worker heartbeat was fresh (5 seconds old).
+  Real job c7554fc3-e58d-4562-8182-410d3cd08db3 ran and failed with
+  SOURCEUNAVAILABLE: Instagram public resolver failed: ClientGraphqlError.
+  User received the Telegram failure message; no media was delivered.
+- Public post/Reel provider had no authenticated fallback despite prepared
+  service credentials. This branch adds fallback through the existing encrypted
+  session manager and propagates the worker database pool through ProviderRouter.
+- Session challenge/disabled/failed-login states and active cooldowns now block
+  automatic login; initial unused sessions still permit their first login.
+  Authenticated request errors persist sanitized stop/cooldown state.
+- Local verify.sh: 111 passed, five database tests skipped; compile, AST,
+  migration chain, readiness and Compose passed. Hosted fallback not tested yet.
