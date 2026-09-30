@@ -4,10 +4,11 @@
 - [x] Create persistent GitHub repository (`franzjemuel/social-saver`).
 - [x] Identify staging test bot: @socialsaverapp_bot (user confirmed).
 - [ ] Configure and validate staging Telegram token in service secret stores.
-- [ ] Provision Postgres/Supabase + PGMQ.
+- [x] Provision staging Supabase + PGMQ; verified hosted 2026-09-30.
 - [ ] Provision private R2 + least-privilege API/worker credentials.
 - [ ] Provision Railway bot/API/worker. Config-as-code is ready in v3.7; external project/service creation remains.
-- [ ] Apply migrations and pass staging canary.
+- [x] Apply migrations 001–020 and verify remote history.
+- [ ] Pass full hosted staging canary.
 - [ ] Complete real Reel -> queue -> worker -> Telegram test.
 - [ ] Complete archive-on-save -> R2 -> authorized download test.
 - [ ] Complete two-account tenant-isolation acceptance test.
@@ -66,5 +67,5 @@
 - [x] Establish private Railway project social-saver-staging and staging environment.
 - [x] Pause duplicate engineering automation with user approval.
 - [x] User created healthy Supabase project mnwlqeeksruyuvqowrdq.
-- [ ] Verify hosted connectivity, migrations and PGMQ.
+- [x] Verify hosted connectivity, migrations and PGMQ.
 - [ ] Complete hosted service provisioning and the authorized Reel acceptance test.

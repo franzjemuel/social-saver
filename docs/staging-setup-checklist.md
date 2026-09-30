@@ -2,8 +2,10 @@
 
 ## Current resources
 
-- Supabase: user reports healthy project `mnwlqeeksruyuvqowrdq`.
-  Migrations, PGMQ and connectivity are not yet verified.
+- Supabase: project `mnwlqeeksruyuvqowrdq` verified ACTIVE_HEALTHY by CLI.
+  Existing release script applied migrations 001–020; remote history matches.
+  Read-only query verified pgmq, pg_cron, pgcrypto and both job queues.
+  Application jobs/users were both zero after release.
 - Telegram: `@socialsaverapp_bot`, confirmed by user to be a test bot.
   Token and delivery are not yet verified.
 - Instagram: user reports dedicated account ready. Worker login is unverified.

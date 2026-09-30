@@ -4,6 +4,18 @@ Updated 2026-09-30 UTC (2026-09-29 America/New_York).
 
 ## Current verified status (supersedes historical entries below)
 
+- Hosted database release completed 2026-09-30 using the authenticated official
+  Supabase CLI v2.118.0 and existing scripts/staging-db-release.sh, targeting
+  mnwlqeeksruyuvqowrdq only. Reviewed dry-run listed exactly 001–020; all applied.
+  Remote migration list matches all 20 local versions. Read-only query confirmed
+  pgcrypto, pgmq and pg_cron, media_jobs and dead_letter_jobs queues, zero jobs
+  and zero users. No application deployment or delivery success is implied.
+- CLI link works without a committed supabase/config.toml. Local supabase/.temp/
+  metadata is excluded via .git/info/exclude and must not be committed.
+- User reports saving per-service database, Telegram, R2 and worker Instagram
+  variables. SESSION_MASTER_KEY placement and hosted environment validation
+  remain to be confirmed. Next gate is Railway configuration and deployment.
+
 - PR #2 and PR #4 are merged. PR #4 head was
   614a76e8c83ea9bd5440f619d2e88e6e0906c383; its final run 36665622112 passed
   test, containers and integration. Merge commit is
