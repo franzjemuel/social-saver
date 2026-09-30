@@ -21,16 +21,18 @@ Updated 2026-09-30 UTC (2026-09-29 America/New_York).
   including admins. Integration passed but is not yet a required protected check.
 - User now authorizes continuing staging provisioning, superseding the earlier
   pause. No paid plan or production deployment is authorized.
-- Railway dashboard was authenticated on a trial and initially showed zero
-  projects. An attempted Empty Project selection unexpectedly created project
-  sincere-respect (6627caf4-e1eb-4a0a-95d8-c890477ea521) and running sandbox
-  21b4117a-b6ac-443a-bebf-67c8d7a00e98. No application code or secrets were
-  deployed. Its Destroy action requires user confirmation; trial consumption
-  has not been quantified. This is not the intended staging deployment.
-- Supabase, R2, Telegram and Instagram staging resources remain unverified.
-- The existing four-hour engineering automation remains ACTIVE and unchanged;
-  pausing it would avoid duplicate usage while this chat is active.
-
+- Railway project social-saver-staging now exists, private, with environment
+  staging. Project ID: 6627caf4-e1eb-4a0a-95d8-c890477ea521; environment ID:
+  a5aa545f-ea60-45a2-b7d8-dd3136b9bb3d. No application services deployed.
+- The unintended sandbox 21b4117a-b6ac-443a-bebf-67c8d7a00e98 is confirmed
+  Destroyed; dashboard shows zero active sandboxes. User approved cleanup.
+  Trial consumption from the accidental creation has not been quantified.
+- Supabase dashboard requires sign-in; no database has been provisioned in this
+  run. R2, Telegram and Instagram staging resources remain unverified.
+- User approved pausing the duplicate four-hour engineering automation;
+  continue-social-saver-engineering is now PAUSED.
+- Documentation PR #5 initial commit 88677ae passed all three CI jobs in run
+  36666649070. No application code changed in this documentation follow-up.
 
 ## Completed
 Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; private R2 archive; separate bot/API/worker services; server-validated Telegram Mini App auth; tenant-scoped reads; shared save pipeline; idempotency/job status; archive browse/detail/download; entitlements/Stars; Saved Friends/story polling; rate limits/monitoring; session vault; Live reliability/security foundations; Railway staging scaffolding; CI/release gates; executable offline staging readiness report with migration floor 020 and service-specific secret boundaries; tenant-safe asynchronous archive deletion with worker-owned R2 cleanup; full asynchronous account deletion with immediate watch/archive disablement and shared-object-safe R2 purge.

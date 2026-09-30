@@ -61,6 +61,8 @@
 - [x] Pass real integration gate and queue/worker test-job round trip; PR #4
   merged as dacf421 with green main run 36665893782.
 - [ ] Require integration in main branch protection before staging release.
-- [ ] Resolve unintended Railway sandbox created during dashboard provisioning
-  inspection; obtain confirmation before Destroy.
+- [x] Confirm unintended Railway sandbox is Destroyed (zero active sandboxes).
+- [x] Establish private Railway project social-saver-staging and staging environment.
+- [x] Pause duplicate engineering automation with user approval.
+- [ ] Sign into Supabase and provision the dedicated staging database.
 - [ ] Complete hosted service provisioning and the authorized Reel acceptance test.
