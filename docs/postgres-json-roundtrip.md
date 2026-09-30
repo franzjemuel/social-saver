@@ -28,7 +28,7 @@ It never reads the application's DATABASE_URL. Tests refuse non-loopback DSNs,
 a database name other than social_saver_test, or an already-initialized database.
 pg_cron is installed but dispatch scheduling is disabled during tests.
 
-The gate is designed to verify (not yet proven by a passing run):
+The gate verifies (passed in merged-main run 36665893782):
 
 - The unconfigured driver rejects the actual dictionary heartbeat write.
 - json/jsonb values survive every pool connection and a replaced connection.
@@ -49,8 +49,10 @@ tests are not integration evidence. This gate replays raw migrations, not the
 Supabase CLI release flow, and does not prove hosted Supabase permissions,
 Instagram extraction, Telegram delivery, R2 behavior or full staging E2E.
 
-This branch is based on open PR #2. Review/merge #2 first, then retarget this PR
-to main and require all three CI jobs (`test`, `containers`, `integration`).
+PR #2 and PR #4 are merged. PR #4 final head 614a76e passed all three jobs
+in run 36665622112, and merge commit dacf421 passed them again in
+[36665893782](https://github.com/franzjemuel/social-saver/actions/runs/36665893782).
+Historical failure evidence below is superseded by these successful runs.
 
 ## Executed evidence — 2026-09-29
 

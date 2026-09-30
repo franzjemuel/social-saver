@@ -2,7 +2,8 @@
 
 ## Current evidence
 
-The v3.8 source is available locally with all 20 migrations preserved. Hosted
+GitHub main at dacf421 is synchronized locally; migrations 001–020 include the
+user-approved migration 011 constraint correction. Hosted
 credentials, staging project IDs and an authorized test-media URL have not been
 provided for this takeover. No real deployment or end-to-end delivery is claimed.
 
@@ -12,9 +13,10 @@ provided for this takeover. No real deployment or end-to-end delivery is claimed
 2. Review and merge the isolated-canary PR before the hosted run. The probe uses
    a transaction-scoped private queue and requires `APP_ENV=staging`; see
    [canary isolation](staging-canary-isolation.md). Confirm rollback on real PGMQ.
-3. Verify database JSON/JSONB serialization against real Postgres/PGMQ. The current
-   pool has no JSON codec initialization even though callers send dictionaries
-   and treat returned JSON as dictionaries. Static tests cannot prove this works.
+3. Verify database JSON/JSONB serialization against real Postgres/PGMQ. This is complete in merged PR #4: main CI run
+   [36665893782](https://github.com/franzjemuel/social-saver/actions/runs/36665893782)
+   passed migration replay, JSON codecs and the real worker test-job path.
+   Hosted Supabase and real media delivery remain unverified.
 4. Provision or identify a dedicated staging Telegram bot, Supabase project,
    private R2 bucket and Railway services. Keep provider credentials worker-only.
 5. Apply migrations through the explicit staging release gate. Never point this

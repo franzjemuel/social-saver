@@ -43,8 +43,9 @@
 - [x] Replace stale auth function-name assertion with actual route dependency checks.
 - [x] Consolidate CI and add installed-wheel/container import verification.
 - [x] Implement isolated staging canary and probe cleanup on a review branch.
-- [ ] Merge canary isolation after review and validate against hosted PGMQ/R2.
-- [ ] Verify/fix Postgres JSON codecs with real database round-trip tests.
+- [x] Merge canary isolation (PR #2).
+- [ ] Validate canary against hosted PGMQ/R2.
+- [x] Verify/fix Postgres JSON codecs with real database round-trip tests.
 - [ ] Confirm hosted staging identifiers and secrets via hosting secret stores.
 - [ ] Pin a tested dependency resolution for repeatable staging releases.
 
@@ -57,6 +58,9 @@
 - [x] Apply user-approved migration 011 correction: replace two constraint-index
   drops with ALTER TABLE DROP CONSTRAINT. Local verification passed; actual
   database replay still requires a passing integration run.
-- [ ] Pass the real integration gate (run 36576459256 failed at migration 011),
-  prove the queue/worker round trip, and review stacked PR #4 after PR #2.
+- [x] Pass real integration gate and queue/worker test-job round trip; PR #4
+  merged as dacf421 with green main run 36665893782.
+- [ ] Require integration in main branch protection before staging release.
+- [ ] Resolve unintended Railway sandbox created during dashboard provisioning
+  inspection; obtain confirmation before Destroy.
 - [ ] Complete hosted service provisioning and the authorized Reel acceptance test.
