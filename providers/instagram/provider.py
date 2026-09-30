@@ -4,8 +4,12 @@ from providers.base import (MediaProvider, ResolvedMedia, ResolvedAsset,
                             UnsupportedUrl, SourceUnavailable)
 
 from providers.instagram.urls import normalize_instagram_url
+from providers.instagram.session import InstagramSessionManager
 
 class InstagramProvider(MediaProvider):
+    def __init__(self, pool=None):
+        self.pool = pool
+
     def supports(self, url: str) -> bool:
         try:
             normalize_instagram_url(url); return True
@@ -14,7 +18,25 @@ class InstagramProvider(MediaProvider):
 
     async def resolve(self, url: str) -> ResolvedMedia:
         canonical = normalize_instagram_url(url)
-        return await asyncio.to_thread(self._resolve_sync, canonical)
+        try:
+            return await asyncio.to_thread(self._resolve_sync, canonical)
+        except SourceUnavailable:
+            if self.pool is None:
+                raise
+        manager = InstagramSessionManager(self.pool)
+        client = await manager.client()
+        if client is None:
+            raise SourceUnavailable("Instagram authenticated session is unavailable or needs attention")
+        try:
+            media = await asyncio.to_thread(self._authenticated_media, client, canonical)
+        except Exception as exc:
+            await manager.record_failure(exc)
+            raise SourceUnavailable(f"Instagram authenticated resolver failed: {type(exc).__name__}") from None
+        return self._normalize(media, canonical, "instagrapi_authenticated_v1")
+
+    @staticmethod
+    def _authenticated_media(client, canonical):
+        return client.media_info_v1(client.media_pk_from_url(canonical))
 
     def _resolve_sync(self, canonical: str) -> ResolvedMedia:
         # Public/web-first. No customer credentials are used in Beta A.
@@ -25,6 +47,10 @@ class InstagramProvider(MediaProvider):
         except Exception as exc:
             raise SourceUnavailable(f"Instagram public resolver failed: {type(exc).__name__}") from exc
 
+        return self._normalize(media, canonical, "instagrapi_public_gql")
+
+    @staticmethod
+    def _normalize(media, canonical, strategy):
         resources = list(media.resources or []) if media.media_type == 8 else [media]
         assets = []
         for i, item in enumerate(resources):
@@ -44,5 +70,5 @@ class InstagramProvider(MediaProvider):
             media_type=media_type, assets=assets,
             creator_username=getattr(media.user, "username", None),
             caption=str(caption) if caption else None, published_at=media.taken_at,
-            strategy="instagrapi_public_gql", metadata={"shortcode": media.code}
+            strategy=strategy, metadata={"shortcode": media.code}
         )

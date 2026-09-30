@@ -60,3 +60,11 @@
 - [ ] Pass the real integration gate (run 36576459256 failed at migration 011),
   prove the queue/worker round trip, and review stacked PR #4 after PR #2.
 - [ ] Complete hosted service provisioning and the authorized Reel acceptance test.
+
+## Hosted Reel follow-up — 2026-09-30
+
+- [x] Verify hosted migrations, PGMQ and actual worker heartbeat after Dockerfile fix.
+- [x] Diagnose public Reel ClientGraphqlError from first hosted job.
+- [x] Implement/test authenticated Reel fallback with session stop/cooldown guards.
+- [ ] Pass fallback CI, review/release to staging, verify account session and retry
+  one authorized Reel. Telegram media delivery remains unproven.

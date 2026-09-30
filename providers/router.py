@@ -7,7 +7,7 @@ class ProviderRouter:
         self.providers=[]
         if pool is not None:
             self.providers.append(InstagramStoryProvider(pool))
-        self.providers.append(InstagramProvider())
+        self.providers.append(InstagramProvider(pool))
 
     def for_url(self,url):
         for provider in self.providers:

@@ -19,3 +19,14 @@ Operational rules:
 Story support in this increment is discovery infrastructure only. `InstagramStoryDiscovery` returns canonical Story URLs
 and provider-neutral IDs. The next increment should add a Story resolver that converts Story objects into the existing
 ResolvedMedia contract and routes them through Telegram/R2.
+
+## Public post/Reel fallback
+
+Public GraphQL extraction remains first. On failure, a worker with a database
+pool may use the existing encrypted service session via media_info_v1. No
+customer credentials are accepted. Challenge/disabled/failed-login state and
+active cooldown prevent automatic login. After manual recovery, an operator must
+explicitly repair/reset session state before another attempt; do not repeatedly
+retry or rotate identities to evade Instagram controls. An unused needs_login
+row with zero failures is eligible for its first login. Authenticated request
+failures store only exception categories, never upstream response text.
