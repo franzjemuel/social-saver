@@ -18,6 +18,17 @@ class ProviderSessionStore:
         if not row or not row["encrypted_settings"]: return None
         return row,self.vault.open(row["encrypted_settings"])
 
+    def settings_from_row(self, row):
+        encrypted = row.get("encrypted_settings")
+        return self.vault.open(encrypted) if encrypted else None
+
+    async def save_settings(self, session_id, settings):
+        """Checkpoint identity/session material without changing auth status."""
+        await self.pool.execute(
+            "update provider_sessions set encrypted_settings=$2,updated_at=now() where id=$1",
+            session_id, self.vault.seal(settings),
+        )
+
     async def save_healthy(self,session_id,settings):
         sealed=self.vault.seal(settings)
         await self.pool.execute(
