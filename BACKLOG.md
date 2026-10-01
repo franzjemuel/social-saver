@@ -10,6 +10,7 @@
 - [ ] Complete real Reel -> queue -> worker -> Telegram test.
 - [x] Configure worker-only Apify token and complete `/stories` -> worker -> Telegram acceptance test.
 - [ ] Deploy and prove Apify-backed `/watchstories` automatic delivery for one new Story.
+- [ ] Configure the requested staging Telegram account in `ADMIN_TELEGRAM_USER_IDS` and verify `/plan` reports Admin.
 - [ ] Complete archive-on-save -> R2 -> authorized download test.
 - [ ] Complete two-account tenant-isolation acceptance test.
 
