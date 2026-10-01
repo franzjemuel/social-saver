@@ -48,6 +48,7 @@ async def main():
         return await repo.get_or_create_telegram_user(u.id,u.username,u.first_name)
 
     async def velocity_ok(message,uid):
+        if is_admin(message): return True
         plan=await entitlements.plan_for(uid)
         result=await abuse.check(uid,plan)
         if result.allowed: return True
@@ -89,7 +90,7 @@ async def main():
         uid=await user_id(message); code=await entitlements.plan_for(uid)
         _,limit=await entitlements.int_feature(uid,"archive_bytes"); used=await entitlements.archive_usage(uid)
         if is_admin(message):
-            await message.answer(f"Plan: Admin\nWatch slots: Unlimited\nArchive: {used/(1024**3):.2f} / {limit/(1024**3):.2f} GB")
+            await message.answer(f"Plan: Admin\nDownloads: Unlimited\nWatch slots: Unlimited\nArchive: Unlimited ({used/(1024**3):.2f} GB used)\nLive recording: Unlimited")
         else:
             await message.answer(f"Plan: {code.title()}\nArchive: {used/(1024**3):.2f} / {limit/(1024**3):.2f} GB")
 
@@ -199,7 +200,7 @@ async def main():
         if not is_admin(message) and await watches.count_active(uid)>=watch_limit:
             await message.answer(f"Your plan allows {watch_limit} active Saved Friend/watch slot(s)."); return
         archive=await entitlements.authorize_archive(uid)
-        if not archive.allowed:
+        if not is_admin(message) and not archive.allowed:
             await message.answer("Saved Friends needs archive access on your plan because new Stories are saved automatically."); return
         try: key,display=await InstagramWatchProvider(db.pool).resolve_target(parts[1])
         except Exception:
@@ -245,7 +246,7 @@ async def main():
         uid=await user_id(message)
         if not await velocity_ok(message,uid): return
         decision=await entitlements.authorize_archive(uid)
-        if not decision.allowed: await message.answer("Permanent archive is not included on your plan."); return
+        if not is_admin(message) and not decision.allowed: await message.answer("Permanent archive is not included on your plan."); return
         jid=await repo.create_job(uid,message.chat.id,"resolve_media",{"url":canonical,"archive":True}); await queue.send(str(jid))
         await message.answer("📦 Saving media and adding it to your archive...")
 

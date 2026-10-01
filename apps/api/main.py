@@ -249,14 +249,16 @@ async def save_media(
     if _repo is None or _queue is None or _entitlements is None or _abuse is None:
         raise HTTPException(status_code=503, detail="api_not_ready")
     uid = identity["app_user_id"]
+    unlimited = await _entitlements.is_unlimited(uid)
     if body.archive:
         archive_decision = await _entitlements.authorize_archive(uid)
         if not archive_decision.allowed:
             raise HTTPException(status_code=403, detail=archive_decision.reason.lower())
     plan = await _entitlements.plan_for(uid)
-    limit = await _abuse.check(uid, plan)
-    if not limit.allowed:
-        raise HTTPException(status_code=429, detail="rate_limited", headers={"Retry-After": str(max(1, int(limit.reset - time.time())))})
+    if not unlimited:
+        limit = await _abuse.check(uid, plan)
+        if not limit.allowed:
+            raise HTTPException(status_code=429, detail="rate_limited", headers={"Retry-After": str(max(1, int(limit.reset - time.time())))})
     # A private Telegram chat id equals the Telegram user's id. Delivery therefore
     # remains on the existing worker path and no second media pipeline is created.
     jid = await _repo.create_job(

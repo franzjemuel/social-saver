@@ -11,7 +11,12 @@ class Decision:
 class EntitlementService:
     def __init__(self,pool): self.pool=pool
 
+    async def is_unlimited(self,user_id):
+        return bool(await self.pool.fetchval(
+          "select exists(select 1 from unlimited_access_overrides where user_id=$1)",user_id))
+
     async def plan_for(self,user_id):
+        if await self.is_unlimited(user_id): return "admin"
         return (await self.pool.fetchval(
           """select plan_code from subscriptions where user_id=$1 and status='active'
           and (current_period_end is null or current_period_end>now())
@@ -19,6 +24,7 @@ class EntitlementService:
 
     async def int_feature(self,user_id,key):
         plan=await self.plan_for(user_id)
+        if plan=="admin": return plan,2**63-1
         value=await self.pool.fetchval(
           "select coalesce(int_value,0) from plan_features where plan_code=$1 and feature_key=$2",plan,key)
         return plan,int(value or 0)
@@ -45,12 +51,15 @@ class EntitlementService:
         async with self.pool.acquire() as con:
             async with con.transaction():
                 await con.execute("select pg_advisory_xact_lock(hashtext($1::text))",str(user_id))
+                unlimited=bool(await con.fetchval(
+                  "select exists(select 1 from unlimited_access_overrides where user_id=$1)",user_id))
                 plan=(await con.fetchval(
                   """select plan_code from subscriptions where user_id=$1 and status='active'
                   and (current_period_end is null or current_period_end>now())
                   order by current_period_end desc nulls first limit 1""",user_id)) or "free"
-                limit=int(await con.fetchval(
+                limit=(2**63-1 if unlimited else int(await con.fetchval(
                   "select coalesce(int_value,0) from plan_features where plan_code=$1 and feature_key='archive_bytes'",plan) or 0)
+                )
                 used=int(await con.fetchval(
                   """select coalesce(sum(so.size_bytes),0) from archive_entries ae
                   join archive_entry_assets aea on aea.archive_entry_id=ae.id

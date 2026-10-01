@@ -15,6 +15,8 @@ class LiveQuota:
         async with self.pool.acquire() as con:
             async with con.transaction():
                 await con.execute("select pg_advisory_xact_lock(hashtext($1::text))",f"live:{user_id}")
+                unlimited=bool(await con.fetchval(
+                    "select exists(select 1 from unlimited_access_overrides where user_id=$1)",user_id))
                 plan=(await con.fetchval(
                     """select plan_code from subscriptions where user_id=$1 and status='active'
                     and (current_period_end is null or current_period_end>now())
@@ -22,13 +24,14 @@ class LiveQuota:
                 limit_minutes=int(await con.fetchval(
                     "select coalesce(int_value,0) from plan_features where plan_code=$1 and feature_key='live_minutes_monthly'",
                     plan) or 0)
-                if limit_minutes<=0: return LiveReservation(False,reason="LIVE_NOT_INCLUDED")
+                if not unlimited and limit_minutes<=0: return LiveReservation(False,reason="LIVE_NOT_INCLUDED")
                 month=date.today().replace(day=1)
                 row=await con.fetchrow(
                     """insert into live_usage_monthly(user_id,month_start) values($1,$2)
                     on conflict(user_id,month_start) do update set updated_at=live_usage_monthly.updated_at
                     returning used_seconds,reserved_seconds""",user_id,month)
-                available=max(0,limit_minutes*60-int(row["used_seconds"])-int(row["reserved_seconds"]))
+                available=(int(requested_seconds) if unlimited else
+                           max(0,limit_minutes*60-int(row["used_seconds"])-int(row["reserved_seconds"])))
                 reserve=min(int(requested_seconds),available)
                 if reserve<60: return LiveReservation(False,reason="LIVE_QUOTA_EXHAUSTED")
                 await con.execute(
