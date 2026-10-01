@@ -14,6 +14,14 @@ Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; priv
 6. Observe one queue job, one worker execution, Telegram delivery, and optional R2 archive.
 7. Repeat with carousel and authorized Story/Saved Friend.
 
+## Public Stories via Apify — 2026-10-01
+
+- Added `/stories @public_username`, queued through the existing Postgres/PGMQ worker path.
+- The worker calls the tested no-login Apify Stories Actor with a per-run cost cap,
+  downloads temporary CDN media immediately, and delivers it through Telegram.
+- `APIFY_API_TOKEN` is worker-only and is rejected by strict bot/API secret checks.
+- Hosted Telegram delivery remains unverified until the worker token is configured and deployed.
+
 ## Open risks
 Real Instagram extraction/session behavior is not yet proven on staging. Live still needs network-level egress restrictions. Public beta needs finalized privacy/terms and explicit backup/log/payment retention periods. Pricing needs real traffic cost measurements.
 

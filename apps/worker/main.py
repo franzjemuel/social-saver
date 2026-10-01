@@ -11,6 +11,7 @@ from apps.worker.processors.live import process_record_live
 from apps.worker.processors.live_finalize import process_finalize_live
 from apps.worker.processors.archive_delete import process_purge_archive
 from apps.worker.processors.account_delete import process_purge_account
+from apps.worker.processors.stories import process_resolve_stories
 from core.observability import init_observability, capture_job_exception
 from core.rate_limits import provider_concurrency
 from core.readiness import start_readiness_server
@@ -90,6 +91,10 @@ async def main():
                 elif job["job_type"] == "resolve_media":
                     async with provider_concurrency.for_platform("instagram"):
                         result = await process_resolve_media(job, repo, bot, db.pool)
+                    success_message = None
+                elif job["job_type"] == "resolve_stories":
+                    async with provider_concurrency.for_platform("instagram"):
+                        result = await process_resolve_stories(job, repo, bot)
                     success_message = None
                 elif job["job_type"] == "poll_watch":
                     async with provider_concurrency.for_platform("instagram"):

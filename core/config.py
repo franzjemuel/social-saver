@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     session_master_key: str | None = None
     instagram_session_username: str | None = None
     instagram_session_password: str | None = None
+    apify_api_token: str | None = None
+    apify_stories_actor_id: str = "mmsVe3IhljF36qhot"
+    apify_max_total_charge_usd: float = 0.05
+    apify_story_limit: int = 10
     upstash_redis_rest_url: str | None = None
     upstash_redis_rest_token: str | None = None
     sentry_dsn: str | None = None
