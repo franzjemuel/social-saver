@@ -6,6 +6,8 @@ from core.media_download import download_asset
 from core.telegram_delivery import TelegramDelivery
 from providers.base import MediaNotFound
 from providers.instagram.apify_stories import ApifyInstagramStoriesProvider
+from providers.instagram.apify_stories import story_from_job_input
+from apps.worker.processors.media import process_resolve_media
 
 
 async def process_resolve_stories(job, repo, bot):
@@ -40,3 +42,8 @@ async def process_resolve_stories(job, repo, bot):
         "strategy": "apify_public_stories_v1",
         "telegram_message_ids": [message.message_id for message in messages],
     }
+
+
+async def process_deliver_story(job, repo, bot):
+    media = story_from_job_input(job["input"] or {})
+    return await process_resolve_media(job, repo, bot, media=media)

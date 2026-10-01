@@ -48,6 +48,7 @@ class DiscoveredMedia:
     canonical_url: str
     published_at: datetime | None = None
     content_kind: str = "post"
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 class WatchProvider(ABC):
     @abstractmethod
