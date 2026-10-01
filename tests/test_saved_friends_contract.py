@@ -9,5 +9,5 @@ def test_saved_friend_jobs_request_archive():
     assert '"archive":bool(watch["auto_archive"])' in s
 def test_bot_exposes_saved_friend_commands():
     s=(ROOT/'apps/bot/main.py').read_text()
-    for cmd in ('savefriend','friends','removefriend'):
+    for cmd in ('savefriend','friends','removefriend','watchstories','unwatchstories'):
         assert f'Command("{cmd}")' in s

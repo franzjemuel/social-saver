@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import re
+from urllib.parse import urlparse
 
 import httpx
 
@@ -31,7 +32,7 @@ class ApifyInstagramStoriesProvider:
         self.max_charge_usd = max_charge_usd
         self.limit = limit
 
-    async def resolve(self, target: str) -> list[ResolvedMedia]:
+    async def resolve(self, target: str, *, only_new: bool = False) -> list[ResolvedMedia]:
         username = normalize_public_profile(target)
         if not self.token:
             raise PublicStoryProviderError("Public Story downloads are not configured yet")
@@ -50,7 +51,7 @@ class ApifyInstagramStoriesProvider:
                     endpoint,
                     params=params,
                     headers={"Authorization": f"Bearer {self.token}"},
-                    json={"targets": [username], "scrapeType": "stories"},
+                    json={"targets": [username], "scrapeType": "stories", "onlyNew": only_new},
                 )
                 response.raise_for_status()
                 rows = response.json()
@@ -91,3 +92,49 @@ class ApifyInstagramStoriesProvider:
                 metadata={"content_kind": "story"},
             ))
         return resolved
+
+
+def story_job_input(media: ResolvedMedia) -> dict:
+    asset = media.assets[0]
+    return {
+        "story": {
+            "id": media.platform_media_id,
+            "canonical_url": media.canonical_url,
+            "media_type": media.media_type,
+            "creator_username": media.creator_username,
+            "published_at": media.published_at.isoformat() if media.published_at else None,
+            "asset_type": asset.asset_type,
+            "source_url": asset.source_url,
+            "duration_seconds": asset.duration_seconds,
+        }
+    }
+
+
+def story_from_job_input(input_data: dict) -> ResolvedMedia:
+    raw = (input_data or {}).get("story") or {}
+    required = ("id", "canonical_url", "media_type", "creator_username", "asset_type", "source_url")
+    if any(not raw.get(key) for key in required):
+        raise ValueError("Incomplete discovered Story payload")
+    source_url = str(raw["source_url"])
+    host = (urlparse(source_url).hostname or "").lower()
+    if urlparse(source_url).scheme != "https" or not (
+        host.endswith(".cdninstagram.com") or host.endswith(".fbcdn.net")
+    ):
+        raise ValueError("Discovered Story media URL is not an approved Instagram CDN URL")
+    published_at = datetime.fromisoformat(raw["published_at"]) if raw.get("published_at") else None
+    return ResolvedMedia(
+        platform="instagram",
+        platform_media_id=str(raw["id"]),
+        canonical_url=str(raw["canonical_url"]),
+        media_type=str(raw["media_type"]),
+        assets=[ResolvedAsset(
+            position=0,
+            asset_type=str(raw["asset_type"]),
+            source_url=source_url,
+            duration_seconds=raw.get("duration_seconds"),
+        )],
+        creator_username=str(raw["creator_username"]),
+        published_at=published_at,
+        strategy="apify_public_story_watch_v1",
+        metadata={"content_kind": "story"},
+    )

@@ -8,13 +8,14 @@ from core.archive import ArchiveService
 
 EXT = {"photo": ".jpg", "video": ".mp4"}
 
-async def process_resolve_media(job, repo, bot, pool=None):
+async def process_resolve_media(job, repo, bot, pool=None, media=None):
     url = (job["input"] or {}).get("url")
-    if not url:
+    if not url and media is None:
         raise ValueError("Missing job input URL")
 
-    provider = ProviderRouter(pool).for_url(url)
-    media = await provider.resolve(url)
+    if media is None:
+        provider = ProviderRouter(pool).for_url(url)
+        media = await provider.resolve(url)
     media_item_id = await repo.upsert_resolved_media(media)
     router = DeliveryRouter()
     telegram_files = []

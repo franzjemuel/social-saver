@@ -16,3 +16,11 @@ def test_watch_service_has_fast_warm_idle_cadence():
 def test_worker_reports_new_items_to_scheduler():
     s=(ROOT/'apps/worker/processors/watch.py').read_text()
     assert 'new_items=queued' in s
+
+def test_public_story_monitoring_uses_apify_only_new_and_fans_out():
+    s=(ROOT/'apps/worker/processors/watch.py').read_text()
+    assert 'only_new=True' in s
+    assert 'list_active_story_watches' in s
+    assert '"deliver_story"' in s
+    bot=(ROOT/'apps/bot/main.py').read_text()
+    assert 'interval=300 if mode in ("stories","both") else 900' in bot

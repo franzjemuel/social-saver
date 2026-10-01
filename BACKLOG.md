@@ -8,7 +8,8 @@
 - [ ] Provision Railway bot/API/worker. Config-as-code is ready in v3.7; external project/service creation remains.
 - [ ] Apply migrations and pass staging canary.
 - [ ] Complete real Reel -> queue -> worker -> Telegram test.
-- [ ] Configure worker-only Apify token and complete `/stories` -> worker -> Telegram acceptance test.
+- [x] Configure worker-only Apify token and complete `/stories` -> worker -> Telegram acceptance test.
+- [ ] Deploy and prove Apify-backed `/watchstories` automatic delivery for one new Story.
 - [ ] Complete archive-on-save -> R2 -> authorized download test.
 - [ ] Complete two-account tenant-isolation acceptance test.
 

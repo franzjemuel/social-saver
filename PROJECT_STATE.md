@@ -21,6 +21,10 @@ Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; priv
   downloads temporary CDN media immediately, and delivers it through Telegram.
 - `APIFY_API_TOKEN` is worker-only and is rejected by strict bot/API secret checks.
 - Hosted Telegram delivery remains unverified until the worker token is configured and deployed.
+- Hosted `/stories` acceptance passed: the bot delivered active public Story media
+  through Apify and Telegram, and the user confirmed the files were forwardable.
+- Automatic public Story watches now use Apify monitoring mode, establish a first-poll
+  baseline, deduplicate in Postgres, and fan new media out to every matching tenant watch.
 
 ## Open risks
 Real Instagram extraction/session behavior is not yet proven on staging. Live still needs network-level egress restrictions. Public beta needs finalized privacy/terms and explicit backup/log/payment retention periods. Pricing needs real traffic cost measurements.

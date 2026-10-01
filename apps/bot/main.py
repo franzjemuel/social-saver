@@ -146,15 +146,33 @@ async def main():
         if not await velocity_ok(message,uid): return
         _,limit=await entitlements.int_feature(uid,"watch_slots")
         if await watches.count_active(uid)>=limit: await message.answer(f"Your plan allows {limit} active watch(es)."); return
-        try: key,display=await InstagramWatchProvider(db.pool).resolve_target(parts[1])
+        try:
+            if mode=="stories":
+                display=normalize_public_profile(parts[1]); key=display
+            else:
+                key,display=await InstagramWatchProvider(db.pool).resolve_target(parts[1])
         except Exception: await message.answer("I couldn't resolve that public Instagram profile right now."); return
-        await watches.create(uid,"instagram",key,display,mode)
+        interval=300 if mode in ("stories","both") else 900
+        await watches.create(uid,"instagram",key,display,mode,interval)
         await message.answer(f"👀 Watching @{display} for {mode}. The first poll establishes a baseline.")
 
     @dp.message(Command("watch"))
     async def watch(message:Message): await add_watch(message,"posts")
     @dp.message(Command("watchstories"))
     async def watchstories(message:Message): await add_watch(message,"stories")
+
+    @dp.message(Command("unwatchstories"))
+    async def unwatchstories(message:Message):
+        parts=(message.text or "").split(maxsplit=1)
+        if len(parts)!=2: await message.answer("Usage: /unwatchstories @username"); return
+        username=parts[1].strip().lstrip("@").lower()
+        uid=await user_id(message)
+        rows=await watches.list(uid)
+        removed=0
+        for row in rows:
+            if row["content_mode"] in ("stories","both") and row["target_display"].lower()==username:
+                if await watches.remove(uid,row["id"]): removed+=1
+        await message.answer("Story watch removed." if removed else "Story watch not found.")
     @dp.message(Command("watchboth"))
     async def watchboth(message:Message): await add_watch(message,"both")
 
