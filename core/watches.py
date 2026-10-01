@@ -74,13 +74,18 @@ class WatchService:
             when idle_poll_count+1 < 3 then 60
             when idle_poll_count+1 < 8 then 180
             else 900 end)
-          where id=$1""",watch_id,cursor,error,new_items)
+          where id=$1""",str(watch_id),cursor,error,new_items)
     async def mark_seen_and_job(self,watch,media,job_type="resolve_media",input_data=None):
+        # asyncpg may return UUID columns as UUID objects while the production
+        # pool's prepared statements expect string UUID inputs. Normalize IDs
+        # crossing back into SQL so scheduled watches work with either form.
+        watch_id=str(watch["id"])
+        user_id=str(watch["user_id"])
         async with self.pool.acquire() as con:
             async with con.transaction():
                 fresh=await con.fetchval(
                   """insert into watch_seen_items(watch_id,content_kind,platform_media_id) values($1,$2,$3)
-                  on conflict do nothing returning platform_media_id""",watch["id"],media.content_kind,media.platform_media_id)
+                  on conflict do nothing returning platform_media_id""",watch_id,media.content_kind,media.platform_media_id)
                 if not fresh: return None
                 payload=input_data or {"url":media.canonical_url}
                 payload.update({"watch_id":str(watch["id"]),"archive":bool(watch["auto_archive"]),
@@ -89,9 +94,9 @@ class WatchService:
                   """insert into jobs(user_id,telegram_chat_id,job_type,input)
                   select $1,ta.telegram_user_id,$2,$3 from telegram_accounts ta
                   where ta.app_user_id=$1 order by ta.created_at limit 1 returning id""",
-                  watch["user_id"],job_type,payload)
+                  user_id,job_type,payload)
                 await con.execute(
                   "insert into watch_deliveries(watch_id,content_kind,platform_media_id,job_id) values($1,$2,$3,$4)",
-                  watch["id"],media.content_kind,media.platform_media_id,job_id)
-                await con.execute("select pgmq.send('media_jobs',jsonb_build_object('version',1,'job_id',$1::text),0)",job_id)
+                  watch_id,media.content_kind,media.platform_media_id,str(job_id))
+                await con.execute("select pgmq.send('media_jobs',jsonb_build_object('version',1,'job_id',$1::text),0)",str(job_id))
                 return job_id
