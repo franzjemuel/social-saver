@@ -7,7 +7,7 @@ MOD=importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(MOD)
 
 def test_readiness_report_tracks_current_migration_floor():
     report=MOD.build_report()
-    assert report["latest_migration"] == 20
+    assert report["latest_migration"] == 21
     assert report["ok"] is True
 
 def test_worker_has_provider_and_write_storage_secrets():

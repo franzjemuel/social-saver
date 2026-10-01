@@ -19,3 +19,16 @@ def test_bot_admins_bypass_watch_limits_and_can_read_id():
     assert 'Command("id")' in source
     assert source.count('not is_admin(message) and await watches.count_active') == 2
     assert 'Watch slots: Unlimited' in source
+    assert 'Downloads: Unlimited' in source
+    assert 'Live recording: Unlimited' in source
+
+
+def test_unlimited_override_applies_across_services():
+    migration=open("supabase/migrations/021_unlimited_access_overrides.sql").read()
+    entitlements=open("core/entitlements.py").read()
+    live_quota=open("core/live_quota.py").read()
+    api=open("apps/api/main.py").read()
+    assert "unlimited_access_overrides" in migration
+    assert "unlimited_access_overrides" in entitlements
+    assert "unlimited_access_overrides" in live_quota
+    assert "if not unlimited" in api
