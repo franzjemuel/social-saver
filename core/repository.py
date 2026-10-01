@@ -105,8 +105,8 @@ class Repository:
     async def update_asset_storage(self, media_item_id, position, *, size_bytes, sha256, storage_provider=None, storage_key=None):
         await self.pool.execute(
             """update media_assets
-               set size_bytes=$3, sha256=$4, storage_provider=$5, storage_key=$6,
-                   archived_at=case when $5 is null then archived_at else now() end
+               set size_bytes=$3, sha256=$4, storage_provider=$5::text, storage_key=$6,
+                   archived_at=case when $5::text is null then archived_at else now() end
                where media_item_id=$1 and position=$2""",
             media_item_id, position, size_bytes, sha256, storage_provider, storage_key
         )
