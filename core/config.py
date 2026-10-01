@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     apify_stories_actor_id: str = "mmsVe3IhljF36qhot"
     apify_max_total_charge_usd: float = 0.05
     apify_story_limit: int = 10
+    admin_telegram_user_ids: str = ""
     upstash_redis_rest_url: str | None = None
     upstash_redis_rest_token: str | None = None
     sentry_dsn: str | None = None

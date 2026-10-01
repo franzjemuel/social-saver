@@ -25,6 +25,8 @@ Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; priv
   through Apify and Telegram, and the user confirmed the files were forwardable.
 - Automatic public Story watches now use Apify monitoring mode, establish a first-poll
   baseline, deduplicate in Postgres, and fan new media out to every matching tenant watch.
+- Added a deployment-owned Telegram admin allowlist. Admins can create unlimited watches
+  without changing Free/Plus/Pro limits for other accounts; `/id` exposes only the caller's ID.
 
 ## Open risks
 Real Instagram extraction/session behavior is not yet proven on staging. Live still needs network-level egress restrictions. Public beta needs finalized privacy/terms and explicit backup/log/payment retention periods. Pricing needs real traffic cost measurements.

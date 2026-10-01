@@ -19,6 +19,7 @@ from providers.instagram.watch import InstagramWatchProvider
 from providers.instagram.provider import normalize_instagram_url
 from providers.base import UnsupportedUrl
 from providers.instagram.apify_stories import normalize_public_profile
+from core.admin import parse_admin_telegram_ids
 
 async def main():
     init_observability("telegram-bot")
@@ -37,6 +38,7 @@ async def main():
     payments=PaymentService(db.pool)
     watches=WatchService(db.pool)
     abuse=AbuseLimiter()
+    admin_telegram_ids=parse_admin_telegram_ids(settings.admin_telegram_user_ids)
     queue=JobQueue(db.pool,settings.queue_name,settings.queue_visibility_seconds)
     bot=Bot(settings.telegram_bot_token)
     dp=Dispatcher()
@@ -51,6 +53,9 @@ async def main():
         if result.allowed: return True
         await message.answer(f"Too many requests at once. Try again in about {max(1,int(result.reset-time.time()))} seconds.")
         return False
+
+    def is_admin(message):
+        return bool(message.from_user and message.from_user.id in admin_telegram_ids)
 
     @dp.message(Command("start"))
     async def start(message:Message):
@@ -75,11 +80,18 @@ async def main():
         h=await system_health(db.pool,settings.queue_name)
         await message.answer(f"Queue: {h['queue']['length']} pending; oldest {h['queue']['oldest_age_seconds'] or 0}s\nWorkers: {h['workers']['healthy']}/{h['workers']['total']} healthy\nWatch errors: {h['watch_errors']}")
 
+    @dp.message(Command("id"))
+    async def telegram_id(message:Message):
+        await message.answer(f"Your Telegram user ID is: {message.from_user.id}")
+
     @dp.message(Command("plan"))
     async def plan(message:Message):
         uid=await user_id(message); code=await entitlements.plan_for(uid)
         _,limit=await entitlements.int_feature(uid,"archive_bytes"); used=await entitlements.archive_usage(uid)
-        await message.answer(f"Plan: {code.title()}\nArchive: {used/(1024**3):.2f} / {limit/(1024**3):.2f} GB")
+        if is_admin(message):
+            await message.answer(f"Plan: Admin\nWatch slots: Unlimited\nArchive: {used/(1024**3):.2f} / {limit/(1024**3):.2f} GB")
+        else:
+            await message.answer(f"Plan: {code.title()}\nArchive: {used/(1024**3):.2f} / {limit/(1024**3):.2f} GB")
 
     @dp.message(Command("upgrade"))
     async def upgrade(message:Message):
@@ -145,7 +157,7 @@ async def main():
         uid=await user_id(message)
         if not await velocity_ok(message,uid): return
         _,limit=await entitlements.int_feature(uid,"watch_slots")
-        if await watches.count_active(uid)>=limit: await message.answer(f"Your plan allows {limit} active watch(es)."); return
+        if not is_admin(message) and await watches.count_active(uid)>=limit: await message.answer(f"Your plan allows {limit} active watch(es)."); return
         try:
             if mode=="stories":
                 display=normalize_public_profile(parts[1]); key=display
@@ -184,7 +196,7 @@ async def main():
         uid=await user_id(message)
         if not await velocity_ok(message,uid): return
         _,watch_limit=await entitlements.int_feature(uid,"watch_slots")
-        if await watches.count_active(uid)>=watch_limit:
+        if not is_admin(message) and await watches.count_active(uid)>=watch_limit:
             await message.answer(f"Your plan allows {watch_limit} active Saved Friend/watch slot(s)."); return
         archive=await entitlements.authorize_archive(uid)
         if not archive.allowed:
