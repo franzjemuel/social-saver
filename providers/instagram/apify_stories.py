@@ -3,10 +3,14 @@ import re
 
 import httpx
 
-from providers.base import ResolvedAsset, ResolvedMedia, SourceUnavailable, UnsupportedUrl
+from providers.base import ResolvedAsset, ResolvedMedia, TerminalProviderError, UnsupportedUrl
 
 
 USERNAME = re.compile(r"^[A-Za-z0-9._]{1,30}$")
+
+
+class PublicStoryProviderError(TerminalProviderError):
+    """Stop queue retries because another Actor run can incur another charge."""
 
 
 def normalize_public_profile(target: str) -> str:
@@ -30,7 +34,7 @@ class ApifyInstagramStoriesProvider:
     async def resolve(self, target: str) -> list[ResolvedMedia]:
         username = normalize_public_profile(target)
         if not self.token:
-            raise SourceUnavailable("Public Story downloads are not configured yet")
+            raise PublicStoryProviderError("Public Story downloads are not configured yet")
         endpoint = f"https://api.apify.com/v2/actors/{self.actor_id}/run-sync-get-dataset-items"
         params = {
             "clean": "true",
@@ -51,9 +55,9 @@ class ApifyInstagramStoriesProvider:
                 response.raise_for_status()
                 rows = response.json()
         except (httpx.HTTPError, ValueError) as exc:
-            raise SourceUnavailable(f"Public Story provider failed: {type(exc).__name__}") from exc
+            raise PublicStoryProviderError(f"Public Story provider failed: {type(exc).__name__}") from exc
         if not isinstance(rows, list):
-            raise SourceUnavailable("Public Story provider returned an invalid response")
+            raise PublicStoryProviderError("Public Story provider returned an invalid response")
 
         resolved = []
         for row in rows[: self.limit]:

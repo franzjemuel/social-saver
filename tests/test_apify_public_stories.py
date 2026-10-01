@@ -3,8 +3,10 @@ import json
 import httpx
 import pytest
 
-from providers.base import SourceUnavailable, UnsupportedUrl
-from providers.instagram.apify_stories import ApifyInstagramStoriesProvider, normalize_public_profile
+from providers.base import UnsupportedUrl
+from providers.instagram.apify_stories import (
+    ApifyInstagramStoriesProvider, PublicStoryProviderError, normalize_public_profile,
+)
 
 
 def test_normalize_public_profile():
@@ -38,5 +40,5 @@ async def test_resolves_public_story_rows(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_missing_token_stops_before_network():
-    with pytest.raises(SourceUnavailable, match="not configured"):
+    with pytest.raises(PublicStoryProviderError, match="not configured"):
         await ApifyInstagramStoriesProvider(None, "actor").resolve("nasa")
