@@ -18,6 +18,7 @@ from core.readiness import start_readiness_server
 from providers.instagram.watch import InstagramWatchProvider
 from providers.instagram.provider import normalize_instagram_url
 from providers.base import UnsupportedUrl
+from providers.instagram.apify_stories import normalize_public_profile
 
 async def main():
     init_observability("telegram-bot")
@@ -54,7 +55,20 @@ async def main():
     @dp.message(Command("start"))
     async def start(message:Message):
         await user_id(message)
-        await message.answer("Welcome. Send a supported Instagram link, or use /savefriend, /friends, /watch, /archive, /plan, or /upgrade.")
+        await message.answer("Welcome. Send a supported Instagram link, or use /stories, /savefriend, /friends, /watch, /archive, /plan, or /upgrade.")
+
+    @dp.message(Command("stories"))
+    async def stories(message:Message):
+        parts=(message.text or "").split(maxsplit=1)
+        if len(parts)!=2:
+            await message.answer("Usage: /stories @public_username"); return
+        try: target=normalize_public_profile(parts[1])
+        except UnsupportedUrl as exc: await message.answer(str(exc)); return
+        uid=await user_id(message)
+        if not await velocity_ok(message,uid): return
+        jid=await repo.create_job(uid,message.chat.id,"resolve_stories",{"target":target})
+        await queue.send(str(jid))
+        await message.answer(f"🔎 Finding active public Stories for @{target}...")
 
     @dp.message(Command("status"))
     async def status(message:Message):

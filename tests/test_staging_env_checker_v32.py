@@ -19,7 +19,13 @@ def test_bot_minimum_passes():
 def test_worker_requires_provider_and_storage_keys():
     r=run("worker",{"DATABASE_URL":"x","TELEGRAM_BOT_TOKEN":"x"})
     assert r.returncode == 1
-    assert "SESSION_MASTER_KEY" in r.stdout and "R2_BUCKET" in r.stdout
+    assert "SESSION_MASTER_KEY" in r.stdout and "R2_BUCKET" in r.stdout and "APIFY_API_TOKEN" in r.stdout
+
+def test_bot_strict_rejects_apify_token():
+    env={"PATH":os.environ.get("PATH", ""),"SOCIAL_SAVER_ROLE":"bot","DATABASE_URL":"x","TELEGRAM_BOT_TOKEN":"x","APIFY_API_TOKEN":"worker-only"}
+    r=subprocess.run([sys.executable,str(SCRIPT),"--strict"],env=env,text=True,capture_output=True)
+    assert r.returncode == 3
+    assert "APIFY_API_TOKEN" in r.stdout and "worker-only" not in r.stdout
 
 def test_bot_strict_rejects_worker_storage_secret():
     env={"PATH":os.environ.get("PATH",""),"SOCIAL_SAVER_ROLE":"bot","DATABASE_URL":"x","TELEGRAM_BOT_TOKEN":"x","R2_SECRET_ACCESS_KEY":"should-not-be-here"}
