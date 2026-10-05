@@ -27,6 +27,11 @@ async def process_archive_profile_media(job, repo, downloader=None, media_servic
                 continue
             try:
                 downloaded = await downloader.download_post(asset["original_url"], root / f"{asset['id']}.mp4")
+            except SourceUnavailable:
+                raise
+            except Exception as exc:
+                raise SourceUnavailable("TikTok media download failed") from exc
+            try:
                 reused_object = await media_service.persist(
                     user_id=job["user_id"], profile_id=profile_id, asset_id=asset["id"], downloaded=downloaded,
                 )
@@ -35,10 +40,8 @@ async def process_archive_profile_media(job, repo, downloader=None, media_servic
                     reused += 1
                 else:
                     uploaded += 1
-            except Exception:
-                failures += 1
-    if failures:
-        raise SourceUnavailable("Profile media persistence incomplete")
+            except Exception as exc:
+                raise SourceUnavailable("profile media storage failed") from exc
     return {"profile_id": str(profile_id), "post_id": str(post_id) if post_id else None,
             "attached": attached, "uploaded": uploaded, "reused": reused,
             "skipped": skipped, "failures": failures}
