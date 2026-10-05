@@ -178,6 +178,34 @@ async def test_profile_media_job_coalesces_concurrent_targeted_requests(database
     await queue.archive(matching[0]['msg_id'])
 
 
+async def test_profile_media_playback_and_acquisition_are_tenant_scoped(database):
+    """A foreign profile/post must be indistinguishable from absent repository data."""
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','playback-account','owner') returning id""", owner,
+    )
+    post = await database.pool.fetchval(
+        """insert into archived_posts(archived_profile_id,platform_post_id,original_url,media_type)
+           values($1,'playback-post','https://www.tiktok.com/@owner/video/playback-post','video') returning id""",
+        profile,
+    )
+    object_id = await database.pool.fetchval(
+        """insert into stored_objects(sha256,storage_key,size_bytes,content_type)
+           values('a' || repeat('0',63),'private-object',1,'video/mp4') returning id""",
+    )
+    await database.pool.execute(
+        """insert into archived_post_media_assets(archived_post_id,position,asset_type,stored_object_id)
+           values($1,0,'video',$2)""", post, object_id,
+    )
+    assert (await repo.get_owned_archived_post_playback(owner, profile, post))['media_type'] == 'video'
+    assert await repo.get_owned_archived_post_playback(other, profile, post) is None
+    assert await repo.list_owned_archived_video_assets(other, profile, post) == []
+    assert await repo.create_owned_profile_media_job(other, 2, profile, post) is None
+
+
 async def test_canary_transaction_leaves_no_queue(database, monkeypatch):
     monkeypatch.setattr(staging_canary.settings, 'app_env', 'staging')
     before = await database.pool.fetch('select queue_name from pgmq.list_queues() order by queue_name')
