@@ -34,6 +34,7 @@
 ## P3 expansion
 - [x] Add provider-neutral private profile archive schema, bounded async-safe tt-dlp TikTok profile scanner, and yt-dlp per-post metadata normalizer (v3.9 foundation).
 - [x] Add worker-owned, SHA-256-deduplicated private R2 persistence and authorized playback for profile archive videos, with real-Postgres UUID queue binding coverage and native no-cookie yt-dlp concrete-post acquisition.
+- [ ] Correct staging worker R2 credential authorization and rerun the one-video TikTok profile-media persistence/playback acceptance.
 - [ ] Add a tenant-authenticated profile-import job/API and worker-owned TikTok media persistence after schema review.
 - [ ] Build private profile archive browse/detail UI with preserved-upstream-removal status.
 - [ ] Facebook provider adapter after Instagram launch gate.

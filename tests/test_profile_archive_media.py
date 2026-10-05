@@ -70,6 +70,34 @@ async def test_worker_persists_video_reuses_sha_and_skips_photo(tmp_path):
     assert reused is True and not uploads and any(call[0] == "attach" for call in repo.calls)
 
 
+@pytest.mark.asyncio
+async def test_profile_media_storage_errors_are_staged_and_sanitized(tmp_path):
+    media = tmp_path / "video.mp4"; media.write_bytes(b"video")
+    downloaded = DownloadedAsset(media, 5, "b" * 64, "video/mp4")
+
+    class UploadFailure:
+        async def put_file(self, *_): raise RuntimeError("https://r2.invalid/private")
+
+    class RecordFailure(Repo):
+        async def create_stored_object(self, *_): raise RuntimeError("sensitive storage key")
+
+    class AttachmentFailure(Repo):
+        async def attach_owned_archived_post_media_object(self, *_): raise RuntimeError("sensitive storage key")
+
+    async def put_file(*_): pass
+    cases = [
+        (Repo(), UploadFailure(), "profile media storage upload failed"),
+        (RecordFailure(), SimpleNamespace(put_file=put_file), "profile media storage record failed"),
+        (AttachmentFailure(stored={"id": ASSET}), SimpleNamespace(put_file=put_file), "profile media storage attachment failed"),
+    ]
+    for repo, storage, message in cases:
+        with pytest.raises(SourceUnavailable, match=message) as error:
+            await ProfileArchiveMediaService(repo, storage).persist(
+                user_id="tenant", profile_id=PROFILE, asset_id=ASSET, downloaded=downloaded,
+            )
+        assert "https://" not in str(error.value) and "key" not in str(error.value)
+
+
 def test_schema_and_projection_keep_private_storage_internal():
     migration = Path("supabase/migrations/023_profile_archive_media.sql").read_text()
     source = Path("core/repository.py").read_text()
