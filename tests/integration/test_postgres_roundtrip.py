@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import asyncpg
 import pytest
@@ -106,6 +107,103 @@ async def test_job_tenant_boundary_and_dead_letter(database):
     dead = await dead_queue.claim()
     assert len(dead) == 1 and dead[0]['message']['job_id'] == str(job_id)
     await dead_queue.archive(dead[0]['msg_id'])
+
+
+async def test_profile_media_job_uuid_parameters_use_real_postgres(database):
+    """Regression for UUID parameter inference in the profile-media queue query."""
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id, platform, platform_account_id, username)
+           values($1, 'tiktok', 'profile-account', 'owner') returning id""",
+        owner,
+    )
+    post = await database.pool.fetchval(
+        """insert into archived_posts(archived_profile_id, platform_post_id, original_url, media_type)
+           values($1, 'post-id', 'https://www.tiktok.com/@owner/video/post-id', 'video') returning id""",
+        profile,
+    )
+    await database.pool.execute(
+        """insert into archived_post_media_assets(archived_post_id, position, asset_type, source_url)
+           values($1, 0, 'video', 'https://www.tiktok.com/@owner/video/post-id')""",
+        post,
+    )
+
+    targeted_job = await repo.create_owned_profile_media_job(owner, 1, profile, post)
+    assert targeted_job is not None and targeted_job.created is True
+    assert (await repo.get_job(targeted_job.id))['input'] == {
+        'profile_id': str(profile), 'post_id': str(post),
+    }
+
+    bulk_job = await repo.create_owned_profile_media_job(owner, 1, profile)
+    assert bulk_job is not None and bulk_job.created is True
+    assert (await repo.get_job(bulk_job.id))['input'] == {'profile_id': str(profile)}
+
+    assert await repo.create_owned_profile_media_job(other, 2, profile, post) is None
+    assert await repo.create_owned_profile_media_job(owner, 1, profile, uuid4()) is None
+
+
+async def test_profile_media_job_coalesces_concurrent_targeted_requests(database):
+    """Double taps must produce one PGMQ job before a video is persisted."""
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','dedupe-account','owner') returning id""", owner,
+    )
+    post = await database.pool.fetchval(
+        """insert into archived_posts(archived_profile_id,platform_post_id,original_url,media_type)
+           values($1,'dedupe-post','https://www.tiktok.com/@owner/video/dedupe-post','video') returning id""",
+        profile,
+    )
+    await database.pool.execute(
+        """insert into archived_post_media_assets(archived_post_id,position,asset_type)
+           values($1,0,'video')""", post,
+    )
+    queue = JobQueue(database.pool)
+    first, second = await asyncio.gather(
+        repo.create_owned_profile_media_job(owner, 1, profile, post, queue_name=queue.queue_name),
+        repo.create_owned_profile_media_job(owner, 1, profile, post, queue_name=queue.queue_name),
+    )
+    assert first is not None and second is not None
+    assert first.id == second.id
+    assert sorted((first.created, second.created)) == [False, True]
+    assert await database.pool.fetchval(
+        "select count(*) from jobs where user_id=$1 and job_type='archive_profile_media'", owner,
+    ) == 1
+    messages = await queue.claim()
+    matching = [message for message in messages if message['message']['job_id'] == str(first.id)]
+    assert len(matching) == 1
+    await queue.archive(matching[0]['msg_id'])
+
+
+async def test_profile_media_playback_and_acquisition_are_tenant_scoped(database):
+    """A foreign profile/post must be indistinguishable from absent repository data."""
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','playback-account','owner') returning id""", owner,
+    )
+    post = await database.pool.fetchval(
+        """insert into archived_posts(archived_profile_id,platform_post_id,original_url,media_type)
+           values($1,'playback-post','https://www.tiktok.com/@owner/video/playback-post','video') returning id""",
+        profile,
+    )
+    object_id = await database.pool.fetchval(
+        """insert into stored_objects(sha256,storage_key,size_bytes,content_type)
+           values('a' || repeat('0',63),'private-object',1,'video/mp4') returning id""",
+    )
+    await database.pool.execute(
+        """insert into archived_post_media_assets(archived_post_id,position,asset_type,stored_object_id)
+           values($1,0,'video',$2)""", post, object_id,
+    )
+    assert (await repo.get_owned_archived_post_playback(owner, profile, post))['media_type'] == 'video'
+    assert await repo.get_owned_archived_post_playback(other, profile, post) is None
+    assert await repo.list_owned_archived_video_assets(other, profile, post) == []
+    assert await repo.create_owned_profile_media_job(other, 2, profile, post) is None
 
 
 async def test_canary_transaction_leaves_no_queue(database, monkeypatch):
