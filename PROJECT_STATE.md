@@ -43,6 +43,26 @@ Updated for v3.8.
   Stable account IDs, secUid, raw provider data, and provider failures remain
   internal. Confirmation/import and frontend UI are intentionally not included.
 
+## TikTok profile-import confirmation — 2026-10-05
+
+- Added the second worker-owned Add Profile backend slice: an authenticated
+  tenant can confirm only its completed TikTok validation preview, which queues
+  an atomic, coalesced metadata import with a backend-owned initial limit of 12.
+- Before persistence, the worker re-scans the public profile and compares its
+  stable account identity with the validation result. A changed identity fails
+  safely rather than importing a username-reused account. The same tenant's
+  already archived account projects as ready without duplicate archive rows or
+  re-import work.
+- A completed preview has no separate wall-clock expiry in v1; confirmation is
+  guarded by that fresh stable-identity scan immediately before any archive
+  mutation.
+- The existing profile-import status contract now projects validating,
+  awaiting-confirmation, queued, importing, ready, and safe failures. It also
+  supports restoration of the newest tenant-owned unfinished workflow. Browser
+  responses exclude stable IDs, secUid, raw provider data, and job inputs.
+- This increment is metadata-only: it does not add the frontend Add Profile UI,
+  full-history/batch import, rescans, payments/quotas, or profile-media work.
+
 ## Profile archive media persistence — 2026-10-05
 
 - Profile video assets can be queued only by their owning Telegram-authenticated

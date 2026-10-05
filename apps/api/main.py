@@ -193,9 +193,18 @@ class TikTokProfilePreview(BaseModel):
     avatar_url: str | None = None
 
 
+class ProfileImportReadyProfile(TikTokProfilePreview):
+    id: str
+
+
 class ProfileImportValidationCreated(BaseModel):
     job_id: str
     phase: str = "validating"
+
+
+class ProfileImportConfirmationCreated(BaseModel):
+    job_id: str
+    phase: str
 
 
 class ProfileImportValidationStatus(BaseModel):
@@ -203,6 +212,8 @@ class ProfileImportValidationStatus(BaseModel):
     phase: str
     preview: TikTokProfilePreview | None = None
     error_code: str | None = None
+    profile: ProfileImportReadyProfile | None = None
+    posts_imported: int | None = None
 
 
 _PROFILE_IMPORT_ERROR_CODES = {
@@ -210,6 +221,8 @@ _PROFILE_IMPORT_ERROR_CODES = {
     "PROFILE_PRIVATE": "profile_private",
     "PROFILE_NOT_FOUND": "profile_not_found",
     "PROVIDER_RATE_LIMITED": "provider_rate_limited",
+    "PROFILE_CHANGED": "profile_changed",
+    "IMPORT_FAILED": "import_failed",
 }
 
 
@@ -234,6 +247,38 @@ def _safe_tiktok_preview(result: object) -> TikTokProfilePreview | None:
         display_name=display_name if isinstance(display_name, str) else None,
         # This provider-hosted image is an ephemeral preview, not archive media.
         avatar_url=avatar_url if isinstance(avatar_url, str) else None,
+    )
+
+
+async def _profile_import_status_for_row(row, user_id):
+    """Render only the browser contract for an owned validation/import job."""
+    if row["job_type"] == "validate_profile_import":
+        if row["status"] in {"queued", "running"}:
+            return ProfileImportValidationStatus(job_id=str(row["id"]), phase="validating")
+        if row["status"] == "completed":
+            preview = _safe_tiktok_preview(row["result"])
+            if preview is not None:
+                return ProfileImportValidationStatus(job_id=str(row["id"]), phase="awaiting_confirmation", preview=preview)
+    elif row["job_type"] == "import_profile":
+        if row["status"] == "queued":
+            return ProfileImportValidationStatus(job_id=str(row["id"]), phase="queued")
+        if row["status"] == "running":
+            return ProfileImportValidationStatus(job_id=str(row["id"]), phase="importing")
+        if row["status"] == "completed" and isinstance(row["result"], dict):
+            profile_id = row["result"].get("profile_id")
+            if isinstance(profile_id, str) and _repo is not None:
+                safe = await _repo.get_owned_archived_profile_import_projection(user_id, profile_id)
+                if safe is not None:
+                    return ProfileImportValidationStatus(
+                        job_id=str(row["id"]), phase="ready",
+                        profile=ProfileImportReadyProfile(
+                            id=str(safe["id"]), platform="tiktok", username=safe["username"],
+                            display_name=safe["display_name"], avatar_url=safe["avatar_url"],
+                        ),
+                        posts_imported=row["result"].get("posts_imported") if isinstance(row["result"].get("posts_imported"), int) else 0,
+                    )
+    return ProfileImportValidationStatus(
+        job_id=str(row["id"]), phase="failed", error_code=_profile_import_failure_code(row["error_code"]),
     )
 
 
@@ -356,21 +401,43 @@ async def profile_import_validation_status(job_id: str, identity=Depends(current
         parsed = UUID(job_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="profile_import_not_found") from None
-    row = await _repo.get_owned_profile_import_validation(identity["app_user_id"], parsed)
+    row = await _repo.get_owned_profile_import_workflow(identity["app_user_id"], parsed)
     if row is None:
         # Foreign and nonexistent ids deliberately share the same response.
         raise HTTPException(status_code=404, detail="profile_import_not_found")
-    if row["status"] in {"queued", "running"}:
-        return ProfileImportValidationStatus(job_id=str(row["id"]), phase="validating")
-    if row["status"] == "completed":
-        preview = _safe_tiktok_preview(row["result"])
-        if preview is not None:
-            return ProfileImportValidationStatus(
-                job_id=str(row["id"]), phase="awaiting_confirmation", preview=preview,
-            )
-    return ProfileImportValidationStatus(
-        job_id=str(row["id"]), phase="failed", error_code=_profile_import_failure_code(row["error_code"]),
+    return await _profile_import_status_for_row(row, identity["app_user_id"])
+
+
+@app.post(
+    "/v1/profile-imports/{validation_job_id}/confirm",
+    response_model=ProfileImportConfirmationCreated,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def confirm_profile_import(validation_job_id: str, identity=Depends(current_identity)):
+    """Confirm an owned preview; target/identity/limit are never browser inputs."""
+    if _repo is None or _queue is None:
+        raise HTTPException(status_code=503, detail="api_not_ready")
+    try:
+        parsed = UUID(validation_job_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="profile_import_not_found") from None
+    job = await _repo.create_owned_profile_import_job(
+        identity["app_user_id"], identity["telegram_user_id"], parsed, queue_name=_queue.queue_name,
     )
+    if job is None:
+        # Invalid states, foreign jobs, and missing IDs intentionally share this.
+        raise HTTPException(status_code=404, detail="profile_import_not_found")
+    return ProfileImportConfirmationCreated(job_id=str(job.id), phase="ready" if job.ready else "queued")
+
+
+@app.get("/v1/profile-imports", response_model=ProfileImportValidationStatus | None)
+async def active_profile_import(active: bool = False, identity=Depends(current_identity)):
+    if not active:
+        raise HTTPException(status_code=404, detail="profile_import_not_found")
+    if _repo is None:
+        raise HTTPException(status_code=503, detail="api_not_ready")
+    row = await _repo.get_owned_active_profile_import_workflow(identity["app_user_id"])
+    return None if row is None else await _profile_import_status_for_row(row, identity["app_user_id"])
 
 
 class ProfileArchiveMediaJobResponse(BaseModel):
