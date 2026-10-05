@@ -6,7 +6,9 @@ server-verified Telegram Mini App initData payload to the internal tenant.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime
 import time
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -122,6 +124,134 @@ async def me(identity=Depends(current_identity)):
 async def dashboard(identity=Depends(current_identity)):
     row = await _repo.dashboard_summary(identity["app_user_id"])
     return jsonable_encoder(dict(row))
+
+
+class ProfileArchiveSummary(BaseModel):
+    id: str
+    platform: str
+    platform_account_id: str
+    username: str
+    display_name: str | None = None
+    bio: str | None = None
+    avatar_url: str | None = None
+    first_archived_at: datetime
+    last_observed_at: datetime
+    post_count: int
+    present_post_count: int
+    removed_post_count: int
+    latest_post_at: datetime | None = None
+
+
+class ProfileArchiveListResponse(BaseModel):
+    items: list[ProfileArchiveSummary]
+    limit: int
+    offset: int
+
+
+class ProfilePostEngagement(BaseModel):
+    observed_at: datetime
+    view_count: int | None = None
+    like_count: int | None = None
+    comment_count: int | None = None
+    repost_count: int | None = None
+    share_count: int | None = None
+    save_count: int | None = None
+
+
+class ProfileArchivePost(BaseModel):
+    id: str
+    platform_post_id: str
+    original_url: str
+    media_type: str
+    caption: str | None = None
+    published_at: datetime | None = None
+    thumbnail_url: str | None = None
+    is_present_on_original: bool
+    first_archived_at: datetime
+    last_observed_at: datetime
+    engagement: ProfilePostEngagement | None = None
+
+
+class ProfileArchivePostListResponse(BaseModel):
+    items: list[ProfileArchivePost]
+    limit: int
+    offset: int
+
+
+def _profile_archive_summary(row) -> ProfileArchiveSummary:
+    data = dict(row)
+    data["id"] = str(data["id"])
+    return ProfileArchiveSummary.model_validate(data)
+
+
+def _profile_archive_post(row) -> ProfileArchivePost:
+    data = dict(row)
+    engagement_observed_at = data.pop("engagement_observed_at")
+    engagement = None
+    if engagement_observed_at is not None:
+        engagement = ProfilePostEngagement(
+            observed_at=engagement_observed_at,
+            view_count=data.pop("view_count"),
+            like_count=data.pop("like_count"),
+            comment_count=data.pop("comment_count"),
+            repost_count=data.pop("repost_count"),
+            share_count=data.pop("share_count"),
+            save_count=data.pop("save_count"),
+        )
+    else:
+        for key in ("view_count", "like_count", "comment_count", "repost_count", "share_count", "save_count"):
+            data.pop(key)
+    data["id"] = str(data["id"])
+    data["engagement"] = engagement
+    return ProfileArchivePost.model_validate(data)
+
+
+@app.get("/v1/profile-archives", response_model=ProfileArchiveListResponse)
+async def profile_archives(
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    identity=Depends(current_identity),
+):
+    rows = await _repo.list_owned_archived_profiles(
+        identity["app_user_id"], limit=limit, offset=offset,
+    )
+    return ProfileArchiveListResponse(
+        items=[_profile_archive_summary(row) for row in rows], limit=limit, offset=offset,
+    )
+
+
+@app.get("/v1/profile-archives/{profile_id}", response_model=ProfileArchiveSummary)
+async def profile_archive_detail(profile_id: str, identity=Depends(current_identity)):
+    try:
+        parsed = UUID(profile_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="profile_archive_not_found") from None
+    row = await _repo.get_owned_archived_profile(identity["app_user_id"], parsed)
+    if row is None:
+        # The same response for foreign and nonexistent IDs avoids an ownership oracle.
+        raise HTTPException(status_code=404, detail="profile_archive_not_found")
+    return _profile_archive_summary(row)
+
+
+@app.get("/v1/profile-archives/{profile_id}/posts", response_model=ProfileArchivePostListResponse)
+async def profile_archive_posts(
+    profile_id: str,
+    limit: int = Query(default=30, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    identity=Depends(current_identity),
+):
+    try:
+        parsed = UUID(profile_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="profile_archive_not_found") from None
+    rows = await _repo.list_owned_archived_profile_posts(
+        identity["app_user_id"], parsed, limit=limit, offset=offset,
+    )
+    if rows is None:
+        raise HTTPException(status_code=404, detail="profile_archive_not_found")
+    return ProfileArchivePostListResponse(
+        items=[_profile_archive_post(row) for row in rows], limit=limit, offset=offset,
+    )
 
 
 @app.get("/v1/archive")
