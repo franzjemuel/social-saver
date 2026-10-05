@@ -1,10 +1,16 @@
 from dataclasses import dataclass
 
-from providers.tiktok.provider import DEVELOPMENT_MAX_POSTS, TikTokProfileProvider
+from providers.tiktok.constants import INITIAL_PROFILE_IMPORT_POST_LIMIT
+from providers.tiktok.provider import TikTokProfileProvider
+
+
+class TikTokProfileChanged(Exception):
+    """The username no longer resolves to the account the user validated."""
 
 
 @dataclass(frozen=True)
 class ProfileImportSummary:
+    archived_profile_id: object
     platform_account_id: str
     posts_discovered: int
     posts_imported: int
@@ -19,8 +25,13 @@ class TikTokProfileImporter:
         self.repo = repo
         self.provider = provider or TikTokProfileProvider()
 
-    async def import_profile(self, user_id, target: str, *, limit: int = DEVELOPMENT_MAX_POSTS) -> ProfileImportSummary:
+    async def import_profile(
+        self, user_id, target: str, *, expected_platform_account_id: str | None = None,
+        limit: int = INITIAL_PROFILE_IMPORT_POST_LIMIT,
+    ) -> ProfileImportSummary:
         profile, posts = await self.provider.discover_profile(target, limit=limit)
+        if expected_platform_account_id is not None and profile.platform_account_id != expected_platform_account_id:
+            raise TikTokProfileChanged("TikTok profile identity changed")
         profile_id = await self.repo.upsert_archived_profile(user_id, profile)
         imported = skipped = failures = 0
         for post in posts:
@@ -34,6 +45,7 @@ class TikTokProfileImporter:
             else:
                 skipped += 1
         return ProfileImportSummary(
+            archived_profile_id=profile_id,
             platform_account_id=profile.platform_account_id,
             posts_discovered=len(posts),
             posts_imported=imported,

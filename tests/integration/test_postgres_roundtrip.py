@@ -219,6 +219,54 @@ async def test_profile_import_validation_coalesces_tenant_target_and_request_ret
     assert await repo.get_owned_profile_import_validation(other, first.id) is None
 
 
+async def test_profile_import_confirmation_is_atomic_tenant_scoped_and_coalesced(database):
+    """Confirmation consumes only an owned completed validation and queues once."""
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    queue = JobQueue(database.pool)
+    validation = await database.pool.fetchval(
+        """insert into jobs(user_id,telegram_chat_id,job_type,status,progress,result,input,source_channel)
+           values($1,1,'validate_profile_import','completed',100,$2,$3,'mini_app') returning id""",
+        owner,
+        {"platform": "tiktok", "target": "https://www.tiktok.com/@creator", "platform_account_id": "stable"},
+        {"platform": "tiktok", "target": "https://www.tiktok.com/@creator"},
+    )
+    first, second = await asyncio.gather(
+        repo.create_owned_profile_import_job(owner, 1, validation, queue_name=queue.queue_name),
+        repo.create_owned_profile_import_job(owner, 1, validation, queue_name=queue.queue_name),
+    )
+    assert first is not None and second is not None and first.id == second.id
+    assert sorted((first.created, second.created)) == [False, True]
+    assert await repo.create_owned_profile_import_job(other, 2, validation, queue_name=queue.queue_name) is None
+    assert await database.pool.fetchval(
+        "select count(*) from jobs where user_id=$1 and job_type='import_profile'", owner,
+    ) == 1
+    job = await repo.get_job(first.id)
+    assert job['input']['limit'] == 12
+    assert job['input']['expected_platform_account_id'] == 'stable'
+    messages = await queue.claim(10)
+    matching = [message for message in messages if message['message']['job_id'] == str(first.id)]
+    assert len(matching) == 1
+    await queue.archive(matching[0]['msg_id'])
+
+    # Existing same-tenant archive projects ready without queueing new work.
+    await database.pool.execute(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','ready-stable','creator')""", owner,
+    )
+    ready_validation = await database.pool.fetchval(
+        """insert into jobs(user_id,telegram_chat_id,job_type,status,progress,result,input,source_channel)
+           values($1,1,'validate_profile_import','completed',100,$2,$3,'mini_app') returning id""",
+        owner,
+        {"platform": "tiktok", "target": "https://www.tiktok.com/@creator", "platform_account_id": "ready-stable"},
+        {"platform": "tiktok", "target": "https://www.tiktok.com/@creator"},
+    )
+    ready = await repo.create_owned_profile_import_job(owner, 1, ready_validation, queue_name=queue.queue_name)
+    assert ready is not None and ready.ready and ready.created
+    assert (await repo.get_job(ready.id))['status'] == 'completed'
+
+
 async def test_profile_media_playback_and_acquisition_are_tenant_scoped(database):
     """A foreign profile/post must be indistinguishable from absent repository data."""
     repo = Repository(database.pool)

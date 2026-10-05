@@ -6,10 +6,11 @@ from providers.base import ArchivedPost, ArchivedProfile, ProfileArchiveProvider
 from providers.tiktok.metadata import TikTokPostMetadataResolver
 from providers.tiktok.normalize import normalize_scanned_tiktok_post, normalize_tiktok_post
 from providers.tiktok.scanner import TikTokProfileScanner
+from providers.tiktok.constants import INITIAL_PROFILE_IMPORT_POST_LIMIT
 
 
 USERNAME = re.compile(r"^[A-Za-z0-9._]{1,30}$")
-DEVELOPMENT_MAX_POSTS = 12
+DEVELOPMENT_MAX_POSTS = INITIAL_PROFILE_IMPORT_POST_LIMIT
 
 
 def normalize_tiktok_profile_target(target: str) -> tuple[str, str]:

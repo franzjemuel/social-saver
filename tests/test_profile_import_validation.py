@@ -7,7 +7,7 @@ from fastapi.routing import APIRoute
 
 import apps.api.main as api
 from apps.worker.processors.profile_import_validation import process_validate_profile_import
-from core.repository import ProfileImportIdempotencyConflict, ProfileImportValidationJob
+from core.repository import ProfileImportIdempotencyConflict, ProfileImportValidationJob, ProfileImportJob
 from providers.base import SourceUnavailable
 from providers.tiktok.provider import normalize_tiktok_profile_target
 from providers.tiktok.scanner import TikTokProfilePrivate, TikTokScannedProfile
@@ -67,6 +67,13 @@ class FakeRepo:
         self.calls.append((user_id, job_id))
         return self.status
 
+    async def get_owned_profile_import_workflow(self, user_id, job_id):
+        self.calls.append((user_id, job_id))
+        return self.status
+
+    async def get_owned_archived_profile_import_projection(self, user_id, profile_id):
+        return None
+
 
 @pytest.mark.asyncio
 async def test_validation_api_requires_authentication_and_safe_target(monkeypatch):
@@ -117,6 +124,7 @@ async def test_validation_api_rejects_idempotency_target_conflicts(monkeypatch):
 async def test_validation_status_is_tenant_scoped_and_sanitized(monkeypatch):
     completed = {
         "id": JOB,
+        "job_type": "validate_profile_import",
         "status": "completed",
         "result": {
             "platform_account_id": "internal-id",
@@ -150,7 +158,7 @@ async def test_validation_status_is_tenant_scoped_and_sanitized(monkeypatch):
             await api.profile_import_validation_status(job_id, identity={"app_user_id": "tenant-b"})
         assert (missing.value.status_code, missing.value.detail) == (404, "profile_import_not_found")
 
-    repo.status = {"id": JOB, "status": "failed", "result": None, "error_code": "https://provider.invalid/raw"}
+    repo.status = {"id": JOB, "job_type": "validate_profile_import", "status": "failed", "result": None, "error_code": "https://provider.invalid/raw"}
     failed = await api.profile_import_validation_status(str(JOB), identity={"app_user_id": "tenant-a"})
     assert failed.phase == "failed" and failed.error_code == "temporarily_unavailable"
     assert "https" not in str(failed.model_dump())
@@ -204,5 +212,29 @@ async def test_validation_worker_sanitizes_provider_failures():
 
 def test_validation_routes_require_telegram_identity():
     routes = {route.path: route for route in api.app.routes if isinstance(route, APIRoute)}
-    for path in ("/v1/profile-imports/tiktok/validations", "/v1/profile-imports/{job_id}"):
+    for path in ("/v1/profile-imports/tiktok/validations", "/v1/profile-imports/{job_id}", "/v1/profile-imports/{validation_job_id}/confirm"):
         assert api.current_identity in [dependency.call for dependency in routes[path].dependant.dependencies]
+
+
+@pytest.mark.asyncio
+async def test_confirmation_derives_owned_validation_only_and_coalesces(monkeypatch):
+    class ConfirmRepo(FakeRepo):
+        async def create_owned_profile_import_job(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return ProfileImportJob(JOB, False)
+
+    repo = ConfirmRepo()
+    monkeypatch.setattr(api, "_repo", repo)
+    monkeypatch.setattr(api, "_queue", SimpleNamespace(queue_name="media_jobs"))
+    response = await api.confirm_profile_import(str(JOB), identity={"app_user_id": "tenant-a", "telegram_user_id": 1})
+    assert response.model_dump() == {"job_id": str(JOB), "phase": "queued"}
+    assert repo.calls[0][0][:3] == ("tenant-a", 1, JOB)
+
+    class MissingRepo(ConfirmRepo):
+        async def create_owned_profile_import_job(self, *args, **kwargs):
+            return None
+    monkeypatch.setattr(api, "_repo", MissingRepo())
+    for value in (str(JOB), "22222222-2222-2222-2222-222222222222"):
+        with pytest.raises(HTTPException) as missing:
+            await api.confirm_profile_import(value, identity={"app_user_id": "tenant-b", "telegram_user_id": 2})
+        assert (missing.value.status_code, missing.value.detail) == (404, "profile_import_not_found")

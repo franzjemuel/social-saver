@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from providers.tiktok.constants import INITIAL_PROFILE_IMPORT_POST_LIMIT
+
 
 @dataclass(frozen=True)
 class ProfileMediaJob:
@@ -15,6 +17,15 @@ class ProfileImportValidationJob:
 
     id: object
     created: bool
+
+
+@dataclass(frozen=True)
+class ProfileImportJob:
+    """An owned metadata-import workflow plus whether it queued worker work."""
+
+    id: object
+    created: bool
+    ready: bool = False
 
 
 class ProfileImportIdempotencyConflict(ValueError):
@@ -146,6 +157,12 @@ class Repository:
             job_id, result
         )
 
+    async def update_job_progress(self, job_id, progress):
+        """Coarse worker progress only; provider internals remain private."""
+        await self.pool.execute(
+            "update jobs set progress=$2 where id=$1 and status='running'", job_id, progress,
+        )
+
     async def fail_job(self, job_id, code, message):
         await self.pool.execute(
             """update jobs set status='failed',error_code=$2,error_message=$3,completed_at=now()
@@ -159,6 +176,108 @@ class Repository:
                from jobs
                where id=$1 and user_id=$2 and job_type='validate_profile_import'""",
             job_id, user_id,
+        )
+
+    async def create_owned_profile_import_job(self, user_id, chat_id, validation_job_id, *, queue_name):
+        """Confirm one owned validation and atomically queue its bounded import.
+
+        The lock is keyed to the validation job, so double confirmation taps can
+        never create multiple logical imports.  All account identity and target
+        values come from the private validation result, never the browser.
+        """
+        lock_key = f"profile-import-confirm:{user_id}:{validation_job_id}"
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                await con.execute("select pg_advisory_xact_lock(hashtextextended($1, 0))", lock_key)
+                validation = await con.fetchrow(
+                    """select id, result from jobs
+                       where id=$1 and user_id=$2 and job_type='validate_profile_import'
+                         and status='completed' for update""",
+                    validation_job_id, user_id,
+                )
+                if validation is None or not isinstance(validation["result"], dict):
+                    return None
+                result = validation["result"]
+                target = result.get("target")
+                account_id = result.get("platform_account_id")
+                if result.get("platform") != "tiktok" or not isinstance(target, str) or not isinstance(account_id, str):
+                    return None
+
+                prior = await con.fetchrow(
+                    """select id, status, result from jobs
+                       where user_id=$1 and job_type='import_profile'
+                         and input->>'validation_job_id'=$2::uuid::text
+                       order by created_at desc limit 1 for update""",
+                    user_id, validation_job_id,
+                )
+                if prior is not None:
+                    return ProfileImportJob(prior["id"], False, prior["status"] == "completed")
+
+                existing_profile = await con.fetchrow(
+                    """select id, platform, username, display_name, avatar_url
+                       from archived_profiles
+                       where user_id=$1 and platform='tiktok' and platform_account_id=$2
+                       limit 1""",
+                    user_id, account_id,
+                )
+                input_data = {
+                    "platform": "tiktok", "target": target,
+                    "expected_platform_account_id": account_id,
+                    "validation_job_id": str(validation_job_id),
+                    "limit": INITIAL_PROFILE_IMPORT_POST_LIMIT,
+                }
+                if existing_profile is not None:
+                    completed = await con.fetchrow(
+                        """insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel,status,progress,result,completed_at)
+                           values($1,$2,'import_profile',$3,'mini_app','completed',100,$4,now()) returning id""",
+                        user_id, chat_id, input_data,
+                        {"profile_id": str(existing_profile["id"]), "posts_imported": 0},
+                    )
+                    return ProfileImportJob(completed["id"], True, True)
+
+                created = await con.fetchrow(
+                    """insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel)
+                       values($1,$2,'import_profile',$3,'mini_app') returning id""",
+                    user_id, chat_id, input_data,
+                )
+                await con.fetchval(
+                    "select * from pgmq.send($1, jsonb_build_object('version',1,'job_id',$2::text), 0)",
+                    queue_name, str(created["id"]),
+                )
+                return ProfileImportJob(created["id"], True)
+
+    async def get_owned_profile_import_workflow(self, user_id, job_id):
+        """Internal status needed to safely project validation/import workflow state."""
+        return await self.pool.fetchrow(
+            """select id, job_type, status, progress, result, error_code
+               from jobs where id=$1 and user_id=$2
+                 and job_type in ('validate_profile_import','import_profile')""",
+            job_id, user_id,
+        )
+
+    async def get_owned_archived_profile_import_projection(self, user_id, profile_id):
+        """Minimal owned profile projection for the import-ready API state."""
+        return await self.pool.fetchrow(
+            """select id, platform, username, display_name, avatar_url
+               from archived_profiles where id=$1::uuid and user_id=$2""",
+            profile_id, user_id,
+        )
+
+    async def get_owned_active_profile_import_workflow(self, user_id):
+        """Newest restorable validation/import workflow for exactly one tenant."""
+        return await self.pool.fetchrow(
+            """select id, job_type, status, progress, result, error_code
+               from jobs where user_id=$1
+                 and ((job_type='validate_profile_import' and status in ('queued','running'))
+                      or (job_type='validate_profile_import' and status='completed' and result ? 'platform_account_id'
+                          and not exists (
+                            select 1 from jobs imported
+                            where imported.user_id=jobs.user_id and imported.job_type='import_profile'
+                              and imported.input->>'validation_job_id'=jobs.id::text
+                          ))
+                      or (job_type='import_profile' and status in ('queued','running')))
+               order by created_at desc limit 1""",
+            user_id,
         )
 
     async def upsert_resolved_media(self, media):
