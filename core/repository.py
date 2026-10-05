@@ -1,3 +1,14 @@
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ProfileMediaJob:
+    """An owned media job plus whether this request created its queue work."""
+
+    id: object
+    created: bool
+
+
 class Repository:
     def __init__(self, pool):
         self.pool = pool
@@ -271,29 +282,74 @@ class Repository:
             "select id from archived_profiles where id=$1 and user_id=$2", profile_id, user_id,
         )
 
-    async def create_owned_profile_media_job(self, user_id, chat_id, profile_id, post_id=None):
-        """Queue only an archived profile that belongs to the caller's tenant."""
-        return await self.pool.fetchval(
-            """with requested_media as (
-                 select $3::uuid as profile_id, $4::uuid as post_id
-               )
-               insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel)
-               select $1,$2,'archive_profile_media',
-                      jsonb_strip_nulls(jsonb_build_object(
-                        'profile_id', requested_media.profile_id,
-                        'post_id', requested_media.post_id
-                      )),
-                      'mini_app'
-               from requested_media
-               where exists(select 1 from archived_profiles profile
-                            where profile.id=requested_media.profile_id and profile.user_id=$1)
-                 and (requested_media.post_id is null or exists(select 1 from archived_posts post
-                     join archived_post_media_assets asset on asset.archived_post_id=post.id
-                     where post.id=requested_media.post_id and post.archived_profile_id=requested_media.profile_id
-                       and post.media_type='video' and asset.asset_type='video'))
-               returning id""",
-            user_id, chat_id, profile_id, post_id,
-        )
+    async def create_owned_profile_media_job(self, user_id, chat_id, profile_id, post_id=None, *, queue_name=None):
+        """Create one active owned media job, coalescing duplicate requests.
+
+        A bulk job covers its profile's unpersisted video assets, so a targeted
+        request joins an active bulk job rather than initiating a duplicate
+        acquisition. The transaction-scoped lock makes that decision atomic.
+        """
+        # A profile-wide lock also serializes targeted requests against a bulk
+        # job, which is the only way to make their overlapping asset sets safe.
+        lock_key = f"profile-media:{user_id}:{profile_id}"
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                await con.execute("select pg_advisory_xact_lock(hashtextextended($1, 0))", lock_key)
+                row = await con.fetchrow(
+                    """with requested_media as (
+                         select $3::uuid as profile_id, $4::uuid as post_id
+                       ), owned_request as (
+                         select requested_media.profile_id, requested_media.post_id
+                         from requested_media
+                         where exists(select 1 from archived_profiles profile
+                                      where profile.id=requested_media.profile_id and profile.user_id=$1)
+                           and (requested_media.post_id is null or exists(select 1 from archived_posts post
+                               join archived_post_media_assets asset on asset.archived_post_id=post.id
+                               where post.id=requested_media.post_id
+                                 and post.archived_profile_id=requested_media.profile_id
+                                 and post.media_type='video' and asset.asset_type='video'))
+                       ), active_job as (
+                         select job.id
+                         from jobs job join owned_request requested on true
+                         where job.user_id=$1 and job.job_type='archive_profile_media'
+                           and job.status in ('queued','running')
+                           and job.input->>'profile_id'=requested.profile_id::text
+                           and (
+                             (requested.post_id is null and not (job.input ? 'post_id'))
+                             or (requested.post_id is not null and (
+                               not (job.input ? 'post_id')
+                               or job.input->>'post_id'=requested.post_id::text
+                             ))
+                           )
+                         order by job.created_at
+                         limit 1
+                       ), created_job as (
+                         insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel)
+                         select $1,$2,'archive_profile_media',
+                                jsonb_strip_nulls(jsonb_build_object(
+                                  'profile_id', requested.profile_id,
+                                  'post_id', requested.post_id
+                                )),
+                                'mini_app'
+                         from owned_request requested
+                         where not exists(select 1 from active_job)
+                         returning id
+                       )
+                       select id, true as created from created_job
+                       union all
+                       select id, false as created from active_job
+                       limit 1""",
+                    user_id, chat_id, profile_id, post_id,
+                )
+                if row and row["created"] and queue_name:
+                    # Keep the job row and its PGMQ message atomic. If queueing
+                    # fails, the transaction rolls back instead of leaving an
+                    # active job that a later duplicate request would coalesce.
+                    await con.fetchval(
+                        "select * from pgmq.send($1, jsonb_build_object('version',1,'job_id',$2::text), 0)",
+                        queue_name, str(row["id"]),
+                    )
+        return ProfileMediaJob(row["id"], row["created"]) if row else None
 
     async def list_owned_archived_video_assets(self, user_id, profile_id, post_id=None):
         """Worker acquisition candidates, always rechecked against tenant ownership."""

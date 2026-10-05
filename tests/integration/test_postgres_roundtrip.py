@@ -131,17 +131,51 @@ async def test_profile_media_job_uuid_parameters_use_real_postgres(database):
     )
 
     targeted_job = await repo.create_owned_profile_media_job(owner, 1, profile, post)
-    assert targeted_job is not None
-    assert (await repo.get_job(targeted_job))['input'] == {
+    assert targeted_job is not None and targeted_job.created is True
+    assert (await repo.get_job(targeted_job.id))['input'] == {
         'profile_id': str(profile), 'post_id': str(post),
     }
 
     bulk_job = await repo.create_owned_profile_media_job(owner, 1, profile)
-    assert bulk_job is not None
-    assert (await repo.get_job(bulk_job))['input'] == {'profile_id': str(profile)}
+    assert bulk_job is not None and bulk_job.created is True
+    assert (await repo.get_job(bulk_job.id))['input'] == {'profile_id': str(profile)}
 
     assert await repo.create_owned_profile_media_job(other, 2, profile, post) is None
     assert await repo.create_owned_profile_media_job(owner, 1, profile, uuid4()) is None
+
+
+async def test_profile_media_job_coalesces_concurrent_targeted_requests(database):
+    """Double taps must produce one PGMQ job before a video is persisted."""
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','dedupe-account','owner') returning id""", owner,
+    )
+    post = await database.pool.fetchval(
+        """insert into archived_posts(archived_profile_id,platform_post_id,original_url,media_type)
+           values($1,'dedupe-post','https://www.tiktok.com/@owner/video/dedupe-post','video') returning id""",
+        profile,
+    )
+    await database.pool.execute(
+        """insert into archived_post_media_assets(archived_post_id,position,asset_type)
+           values($1,0,'video')""", post,
+    )
+    queue = JobQueue(database.pool)
+    first, second = await asyncio.gather(
+        repo.create_owned_profile_media_job(owner, 1, profile, post, queue_name=queue.queue_name),
+        repo.create_owned_profile_media_job(owner, 1, profile, post, queue_name=queue.queue_name),
+    )
+    assert first is not None and second is not None
+    assert first.id == second.id
+    assert sorted((first.created, second.created)) == [False, True]
+    assert await database.pool.fetchval(
+        "select count(*) from jobs where user_id=$1 and job_type='archive_profile_media'", owner,
+    ) == 1
+    messages = await queue.claim()
+    matching = [message for message in messages if message['message']['job_id'] == str(first.id)]
+    assert len(matching) == 1
+    await queue.archive(matching[0]['msg_id'])
 
 
 async def test_canary_transaction_leaves_no_queue(database, monkeypatch):

@@ -31,8 +31,11 @@ async def process_archive_profile_media(job, repo, downloader=None, media_servic
                 raise
             except SourceUnavailable:
                 raise
-            except Exception as exc:
-                raise SourceUnavailable("TikTok media download failed") from exc
+            except Exception:
+                # Provider exceptions can include ephemeral source URLs.  The
+                # worker may report this exception to telemetry, so retain only
+                # the stage/category rather than a chained provider error.
+                raise SourceUnavailable("TikTok media download failed") from None
             try:
                 reused_object = await media_service.persist(
                     user_id=job["user_id"], profile_id=profile_id, asset_id=asset["id"], downloaded=downloaded,
@@ -44,8 +47,8 @@ async def process_archive_profile_media(job, repo, downloader=None, media_servic
                     uploaded += 1
             except SourceUnavailable:
                 raise
-            except Exception as exc:
-                raise SourceUnavailable("profile media storage failed") from exc
+            except Exception:
+                raise SourceUnavailable("profile media storage failed") from None
     return {"profile_id": str(profile_id), "post_id": str(post_id) if post_id else None,
             "attached": attached, "uploaded": uploaded, "reused": reused,
             "skipped": skipped, "failures": failures}

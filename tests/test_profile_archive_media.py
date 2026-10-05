@@ -11,6 +11,7 @@ import apps.api.main as api
 from apps.worker.processors.profile_archive_media import process_archive_profile_media
 from core.media_download import DownloadedAsset
 from core.profile_archive_media import ProfileArchiveMediaService
+from core.repository import ProfileMediaJob
 from providers.base import MediaNotFound, SourceUnavailable
 from providers.tiktok.download import TikTokMediaDownloader
 
@@ -21,7 +22,7 @@ ASSET = UUID("33333333-3333-3333-3333-333333333333")
 
 class Repo:
     def __init__(self, owned=True, stored=None): self.owned, self.stored, self.calls = owned, stored, []
-    async def create_owned_profile_media_job(self, user, chat, profile, post_id=None):
+    async def create_owned_profile_media_job(self, user, chat, profile, post_id=None, *, queue_name=None):
         self.calls.append((user, chat, profile, post_id)); return UUID("44444444-4444-4444-4444-444444444444") if self.owned else None
     async def get_owned_archived_post_playback(self, user, profile, post):
         return {"media_type": "video", "storage_key": "private/key"} if self.owned else None
@@ -34,9 +35,7 @@ class Repo:
 
 @pytest.mark.asyncio
 async def test_queue_and_playback_are_tenant_scoped_and_safe(monkeypatch):
-    repo, queue = Repo(), SimpleNamespace(send=lambda _: None)
-    async def send(_): pass
-    queue.send = send
+    repo, queue = Repo(), SimpleNamespace(queue_name="media_jobs")
     monkeypatch.setattr(api, "_repo", repo); monkeypatch.setattr(api, "_queue", queue)
     result = await api.archive_profile_media(str(PROFILE), identity={"app_user_id": "tenant", "telegram_user_id": 1})
     assert result.status == "queued" and repo.calls[0][0] == "tenant"
@@ -49,6 +48,36 @@ async def test_queue_and_playback_are_tenant_scoped_and_safe(monkeypatch):
     with pytest.raises(HTTPException) as error:
         await api.archive_profile_media(str(PROFILE), identity={"app_user_id": "other", "telegram_user_id": 2})
     assert error.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_duplicate_profile_media_request_reuses_job_without_resending(monkeypatch):
+    calls = []
+    class DuplicateRepo:
+        async def create_owned_profile_media_job(self, *_, **__):
+            return ProfileMediaJob(UUID("44444444-4444-4444-4444-444444444444"), False)
+    monkeypatch.setattr(api, "_repo", DuplicateRepo())
+    monkeypatch.setattr(api, "_queue", SimpleNamespace(queue_name="media_jobs"))
+    response = await api.archive_profile_post_media(
+        str(PROFILE), str(POST), identity={"app_user_id": "tenant", "telegram_user_id": 1},
+    )
+    assert response.status == "queued" and calls == []
+
+
+@pytest.mark.asyncio
+async def test_playback_signing_failure_is_sanitized(monkeypatch):
+    class OwnedRepo:
+        async def get_owned_archived_post_playback(self, *_):
+            return {"media_type": "video", "storage_key": "private/key"}
+    class BrokenStorage:
+        async def presigned_get(self, *_):
+            raise RuntimeError("private storage detail")
+    monkeypatch.setattr(api, "_repo", OwnedRepo())
+    monkeypatch.setattr(api, "_r2", BrokenStorage())
+    with pytest.raises(HTTPException) as error:
+        await api.profile_archive_playback(str(PROFILE), str(POST), identity={"app_user_id": "tenant"})
+    assert error.value.status_code == 503
+    assert error.value.detail == "archive_playback_unavailable"
 
 
 @pytest.mark.asyncio
@@ -111,8 +140,7 @@ def test_schema_and_projection_keep_private_storage_internal():
 @pytest.mark.asyncio
 async def test_single_post_route_and_worker_never_fall_through(monkeypatch):
     repo = Repo()
-    async def send(_): pass
-    monkeypatch.setattr(api, "_repo", repo); monkeypatch.setattr(api, "_queue", SimpleNamespace(send=send))
+    monkeypatch.setattr(api, "_repo", repo); monkeypatch.setattr(api, "_queue", SimpleNamespace(queue_name="media_jobs"))
     response = await api.archive_profile_post_media(str(PROFILE), str(POST), identity={"app_user_id": "tenant", "telegram_user_id": 1})
     assert response.status == "queued" and repo.calls[-1] == ("tenant", 1, PROFILE, POST)
     class TargetedRepo(Repo):
@@ -130,6 +158,20 @@ async def test_profile_media_failure_propagates_for_retry():
     with pytest.raises(Exception) as error:
         await process_archive_profile_media({"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}}, Repo(), FailingDownloader(), SimpleNamespace())
     assert str(error.value) == "TikTok media validation failed"
+
+
+@pytest.mark.asyncio
+async def test_unexpected_downloader_error_drops_raw_provider_cause():
+    class FailingDownloader:
+        async def download_post(self, _, __):
+            raise RuntimeError("https://provider.invalid/private-media")
+    with pytest.raises(SourceUnavailable, match="TikTok media download failed") as error:
+        await process_archive_profile_media(
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}},
+            Repo(), FailingDownloader(), SimpleNamespace(),
+        )
+    assert error.value.__cause__ is None
+    assert "https://" not in str(error.value)
 
 
 @pytest.mark.asyncio
@@ -183,6 +225,7 @@ def test_native_ytdlp_disables_cache_and_cookie_options(monkeypatch, tmp_path):
     monkeypatch.setattr(yt_dlp, "YoutubeDL", FakeYDL)
     TikTokMediaDownloader._download_with_ytdlp("https://www.tiktok.com/@aliachin11/video/7176363825556376859", tmp_path)
     assert captured["cachedir"] is False and "cookiefile" not in captured and "cookiesfrombrowser" not in captured
+    assert captured["max_filesize"] == 1_000_000_000 and captured["socket_timeout"] == 30
     assert Path(captured["outtmpl"]).parent == tmp_path
 
 
@@ -210,3 +253,17 @@ async def test_native_download_rejects_photo_invalid_output_and_safe_errors(tmp_
             "https://www.tiktok.com/@aliachin11/video/7176363825556376859", destination
         )
     assert "https://" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_native_download_enforces_size_limit_and_cleans_partial_output(tmp_path):
+    payload = b"\x00\x00\x00\x18ftypisom" + b"x" * 16
+    def oversized(_, root):
+        (root / "provider.mp4").write_bytes(payload)
+    destination = tmp_path / "video.mp4"
+    with pytest.raises(MediaNotFound, match="TikTok media exceeds archive size limit"):
+        await TikTokMediaDownloader(native_download=oversized, max_bytes=12).download_post(
+            "https://www.tiktok.com/@aliachin11/video/7176363825556376859", destination,
+        )
+    assert not destination.exists()
+    assert not destination.with_name(destination.name + ".part").exists()

@@ -15,8 +15,19 @@ from providers.base import MediaNotFound, SourceUnavailable, UnsupportedUrl
 class TikTokMediaDownloader:
     """Download one concrete public TikTok video with yt-dlp's native path."""
 
-    def __init__(self, native_download: Callable[[str, Path], None] | None = None):
-        self._native_download = native_download or self._download_with_ytdlp
+    def __init__(
+        self,
+        native_download: Callable[[str, Path], None] | None = None,
+        *,
+        max_bytes: int = 1_000_000_000,
+        socket_timeout_seconds: int = 30,
+    ):
+        self._max_bytes = max_bytes
+        self._native_download = native_download or (
+            lambda url, output: self._download_with_ytdlp(
+                url, output, max_bytes=max_bytes, socket_timeout_seconds=socket_timeout_seconds,
+            )
+        )
 
     async def download_post(self, canonical_url: str, destination: Path) -> DownloadedAsset:
         """Run blocking provider work off-loop and normalize its output path."""
@@ -34,7 +45,7 @@ class TikTokMediaDownloader:
                     raise SourceUnavailable("local temporary file failure") from None
                 except Exception:
                     raise SourceUnavailable("TikTok native download failed") from None
-                return self._normalize_download(root, destination)
+                return self._normalize_download(root, destination, max_bytes=self._max_bytes)
         except (MediaNotFound, SourceUnavailable, UnsupportedUrl):
             raise
         except OSError:
@@ -54,7 +65,13 @@ class TikTokMediaDownloader:
             raise MediaNotFound("TikTok produced no video")
 
     @staticmethod
-    def _download_with_ytdlp(canonical_url: str, output: Path) -> None:
+    def _download_with_ytdlp(
+        canonical_url: str,
+        output: Path,
+        *,
+        max_bytes: int = 1_000_000_000,
+        socket_timeout_seconds: int = 30,
+    ) -> None:
         from yt_dlp import YoutubeDL
 
         options = {
@@ -64,13 +81,15 @@ class TikTokMediaDownloader:
             "cachedir": False,
             "retries": 1,
             "fragment_retries": 1,
+            "socket_timeout": socket_timeout_seconds,
+            "max_filesize": max_bytes,
             "outtmpl": str(output / "video.%(ext)s"),
         }
         with YoutubeDL(options) as downloader:
             downloader.extract_info(canonical_url, download=True)
 
     @staticmethod
-    def _normalize_download(root: Path, destination: Path) -> DownloadedAsset:
+    def _normalize_download(root: Path, destination: Path, *, max_bytes: int) -> DownloadedAsset:
         candidates = [
             path for path in root.rglob("*")
             if path.is_file() and not path.name.endswith(".part")
@@ -89,6 +108,8 @@ class TikTokMediaDownloader:
             size = 0
             with source.open("rb") as input_file, temporary.open("wb") as output_file:
                 while chunk := input_file.read(256 * 1024):
+                    if size + len(chunk) > max_bytes:
+                        raise MediaNotFound("TikTok media exceeds archive size limit")
                     output_file.write(chunk)
                     digest.update(chunk)
                     size += len(chunk)

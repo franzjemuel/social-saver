@@ -43,11 +43,15 @@ Updated for v3.8.
   object IDs, or hashes. Photo/carousel persistence remains intentionally out of scope.
 - Profile-media job UUID binding is covered by a real disposable-Postgres regression
   test, including targeted and bulk tenant-owned queue requests.
-- Hosted acceptance is not yet complete: one staging video reached the storage
-  stage after native acquisition, but the worker's configured R2 credentials
-  received an authorization failure. No profile-media attachment or playback
-  was created; an authorized staging R2 credential correction is required before
-  retrying the same single-video canary.
+- Targeted requests now coalesce concurrent duplicate taps before queue delivery,
+  and playback signing failures return a safe availability error rather than
+  storage details. Native acquisition is bounded by yt-dlp's max-file option and
+  local post-download validation.
+- Hosted acceptance is not yet complete. Migration 023 is applied, the corrected
+  worker R2 credential passed a bounded write/read/delete probe, and the exact
+  PR worker build is deployed. No post-R2-fix real video canary, persisted object,
+  signed playback validation, or real-object idempotency proof has run. The 12
+  benchmark posts remain metadata-only by design.
 
 ## Completed
 Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; private R2 archive; separate bot/API/worker services; server-validated Telegram Mini App auth; tenant-scoped reads; shared save pipeline; idempotency/job status; archive browse/detail/download; entitlements/Stars; Saved Friends/story polling; rate limits/monitoring; session vault; Live reliability/security foundations; Railway staging scaffolding; CI/release gates; executable offline staging readiness report with migration floor 020 and service-specific secret boundaries; tenant-safe asynchronous archive deletion with worker-owned R2 cleanup; full asynchronous account deletion with immediate watch/archive disablement and shared-object-safe R2 purge.

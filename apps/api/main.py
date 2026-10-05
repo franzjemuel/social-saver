@@ -276,12 +276,12 @@ async def archive_profile_media(profile_id: str, identity=Depends(current_identi
         parsed = UUID(profile_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="profile_archive_not_found") from None
-    job_id = await _repo.create_owned_profile_media_job(
-        identity["app_user_id"], identity["telegram_user_id"], parsed,
+    job = await _repo.create_owned_profile_media_job(
+        identity["app_user_id"], identity["telegram_user_id"], parsed, queue_name=_queue.queue_name,
     )
-    if job_id is None:
+    if job is None:
         raise HTTPException(status_code=404, detail="profile_archive_not_found")
-    await _queue.send(str(job_id))
+    job_id = getattr(job, "id", job)
     return ProfileArchiveMediaJobResponse(job_id=str(job_id))
 
 
@@ -295,19 +295,19 @@ async def archive_profile_post_media(profile_id: str, post_id: str, identity=Dep
         post = UUID(post_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="profile_archive_not_found") from None
-    job_id = await _repo.create_owned_profile_media_job(
-        identity["app_user_id"], identity["telegram_user_id"], profile, post,
+    job = await _repo.create_owned_profile_media_job(
+        identity["app_user_id"], identity["telegram_user_id"], profile, post, queue_name=_queue.queue_name,
     )
-    if job_id is None:
+    if job is None:
         raise HTTPException(status_code=404, detail="profile_archive_not_found")
-    await _queue.send(str(job_id))
+    job_id = getattr(job, "id", job)
     return ProfileArchiveMediaJobResponse(job_id=str(job_id))
 
 
 @app.post("/v1/profile-archives/{profile_id}/posts/{post_id}/playback",
           response_model=ProfileArchivePlaybackResponse)
 async def profile_archive_playback(profile_id: str, post_id: str, identity=Depends(current_identity)):
-    if _r2 is None:
+    if _repo is None or _r2 is None:
         raise HTTPException(status_code=503, detail="archive_playback_unavailable")
     try:
         profile = UUID(profile_id)
@@ -319,7 +319,10 @@ async def profile_archive_playback(profile_id: str, post_id: str, identity=Depen
         raise HTTPException(status_code=404, detail="profile_archive_not_found")
     if row["storage_key"] is None:
         return ProfileArchivePlaybackResponse(available=False, media_type=row["media_type"])
-    url = await _r2.presigned_get(row["storage_key"], settings.archive_presign_seconds)
+    try:
+        url = await _r2.presigned_get(row["storage_key"], settings.archive_presign_seconds)
+    except Exception:
+        raise HTTPException(status_code=503, detail="archive_playback_unavailable") from None
     return ProfileArchivePlaybackResponse(
         available=True, media_type=row["media_type"], playback_url=url,
         expires_in=settings.archive_presign_seconds,
