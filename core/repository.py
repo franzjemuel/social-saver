@@ -271,17 +271,22 @@ class Repository:
             "select id from archived_profiles where id=$1 and user_id=$2", profile_id, user_id,
         )
 
-    async def create_owned_profile_media_job(self, user_id, chat_id, profile_id):
+    async def create_owned_profile_media_job(self, user_id, chat_id, profile_id, post_id=None):
         """Queue only an archived profile that belongs to the caller's tenant."""
         return await self.pool.fetchval(
             """insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel)
-               select $1,$2,'archive_profile_media',jsonb_build_object('profile_id',$3::text),'mini_app'
-               where exists(select 1 from archived_profiles where id=$3 and user_id=$1)
+               select $1,$2,'archive_profile_media',jsonb_strip_nulls(jsonb_build_object('profile_id',$3::text,'post_id',$4::text)),'mini_app'
+               where exists(select 1 from archived_profiles profile
+                            where profile.id=$3 and profile.user_id=$1)
+                 and ($4::uuid is null or exists(select 1 from archived_posts post
+                     join archived_post_media_assets asset on asset.archived_post_id=post.id
+                     where post.id=$4 and post.archived_profile_id=$3
+                       and post.media_type='video' and asset.asset_type='video'))
                returning id""",
-            user_id, chat_id, profile_id,
+            user_id, chat_id, profile_id, post_id,
         )
 
-    async def list_owned_archived_video_assets(self, user_id, profile_id):
+    async def list_owned_archived_video_assets(self, user_id, profile_id, post_id=None):
         """Worker acquisition candidates, always rechecked against tenant ownership."""
         return await self.pool.fetch(
             """select asset.id, asset.asset_type, post.original_url
@@ -291,8 +296,9 @@ class Repository:
                where profile.id=$1 and profile.user_id=$2 and profile.platform='tiktok'
                  and post.media_type='video' and asset.asset_type='video'
                  and asset.stored_object_id is null
+                 and ($3::uuid is null or post.id=$3)
                order by post.published_at desc nulls last, post.id, asset.position""",
-            profile_id, user_id,
+            profile_id, user_id, post_id,
         )
 
     async def attach_owned_archived_post_media_object(self, user_id, profile_id, asset_id, object_id):
@@ -405,7 +411,11 @@ class Repository:
                 return await con.fetch("""select so.id,so.storage_key from archive_entry_assets mine
                     join stored_objects so on so.id=mine.stored_object_id where mine.archive_entry_id=$1 and so.deleted_at is null
                     and not exists(select 1 from archive_entry_assets other join archive_entries ae2 on ae2.id=other.archive_entry_id
-                    where other.stored_object_id=mine.stored_object_id and ae2.deleted_at is null and ae2.id<>$1)""",entry_id)
+                    where other.stored_object_id=mine.stored_object_id and ae2.deleted_at is null and ae2.id<>$1)
+                    and not exists(select 1 from archived_post_media_assets profile_asset
+                      join archived_posts profile_post on profile_post.id=profile_asset.archived_post_id
+                      join archived_profiles profile on profile.id=profile_post.archived_profile_id
+                      where profile_asset.stored_object_id=so.id)""",entry_id)
 
     async def list_unreferenced_objects_for_archive_entry(self, entry_id):
         """Return physical objects formerly attached to entry_id that have no live owner.
@@ -418,7 +428,11 @@ class Repository:
             where mine.archive_entry_id=$1 and so.deleted_at is null
             and not exists(select 1 from archive_entry_assets other
                 join archive_entries ae2 on ae2.id=other.archive_entry_id
-                where other.stored_object_id=mine.stored_object_id and ae2.deleted_at is null)""", entry_id)
+                where other.stored_object_id=mine.stored_object_id and ae2.deleted_at is null)
+            and not exists(select 1 from archived_post_media_assets profile_asset
+              join archived_posts profile_post on profile_post.id=profile_asset.archived_post_id
+              join archived_profiles profile on profile.id=profile_post.archived_profile_id
+              where profile_asset.stored_object_id=so.id)""", entry_id)
 
     async def mark_stored_object_deleted(self, object_id):
         await self.pool.execute("update stored_objects set deleted_at=now() where id=$1",object_id)
@@ -479,16 +493,24 @@ class Repository:
     async def list_unreferenced_objects_for_user(self, user_id):
         """Physical blobs from this user's archives that no live tenant still references."""
         return await self.pool.fetch(
-            """select distinct so.id,so.storage_key
-               from archive_entries mine
-               join archive_entry_assets mea on mea.archive_entry_id=mine.id
-               join stored_objects so on so.id=mea.stored_object_id
-               where mine.user_id=$1 and so.deleted_at is null
-                 and not exists(
-                   select 1 from archive_entry_assets other
+            """with candidates as (
+                 select mea.stored_object_id from archive_entries entry
+                 join archive_entry_assets mea on mea.archive_entry_id=entry.id where entry.user_id=$1
+                 union
+                 select asset.stored_object_id from archived_post_media_assets asset
+                 join archived_posts post on post.id=asset.archived_post_id
+                 join archived_profiles profile on profile.id=post.archived_profile_id
+                 where profile.user_id=$1 and asset.stored_object_id is not null
+               ) select distinct so.id,so.storage_key from candidates
+               join stored_objects so on so.id=candidates.stored_object_id
+               where so.deleted_at is null
+                 and not exists(select 1 from archive_entry_assets other
                    join archive_entries live on live.id=other.archive_entry_id
-                   where other.stored_object_id=so.id and live.deleted_at is null
-                 )""", user_id
+                   where other.stored_object_id=so.id and live.deleted_at is null and live.user_id<>$1)
+                 and not exists(select 1 from archived_post_media_assets other
+                   join archived_posts post on post.id=other.archived_post_id
+                   join archived_profiles profile on profile.id=post.archived_profile_id
+                   where other.stored_object_id=so.id and profile.user_id<>$1)""", user_id
         )
 
     async def finalize_account_deletion(self, user_id):

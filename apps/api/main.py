@@ -285,6 +285,25 @@ async def archive_profile_media(profile_id: str, identity=Depends(current_identi
     return ProfileArchiveMediaJobResponse(job_id=str(job_id))
 
 
+@app.post("/v1/profile-archives/{profile_id}/posts/{post_id}/archive-media",
+          response_model=ProfileArchiveMediaJobResponse, status_code=status.HTTP_202_ACCEPTED)
+async def archive_profile_post_media(profile_id: str, post_id: str, identity=Depends(current_identity)):
+    if _repo is None or _queue is None:
+        raise HTTPException(status_code=503, detail="api_not_ready")
+    try:
+        profile = UUID(profile_id)
+        post = UUID(post_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="profile_archive_not_found") from None
+    job_id = await _repo.create_owned_profile_media_job(
+        identity["app_user_id"], identity["telegram_user_id"], profile, post,
+    )
+    if job_id is None:
+        raise HTTPException(status_code=404, detail="profile_archive_not_found")
+    await _queue.send(str(job_id))
+    return ProfileArchiveMediaJobResponse(job_id=str(job_id))
+
+
 @app.post("/v1/profile-archives/{profile_id}/posts/{post_id}/playback",
           response_model=ProfileArchivePlaybackResponse)
 async def profile_archive_playback(profile_id: str, post_id: str, identity=Depends(current_identity)):
