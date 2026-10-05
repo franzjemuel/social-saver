@@ -42,6 +42,8 @@ async def process_archive_profile_media(job, repo, downloader=None, media_servic
                     reused += 1
                 else:
                     uploaded += 1
+            except SourceUnavailable:
+                raise
             except Exception as exc:
                 raise SourceUnavailable("profile media storage failed") from exc
     return {"profile_id": str(profile_id), "post_id": str(post_id) if post_id else None,

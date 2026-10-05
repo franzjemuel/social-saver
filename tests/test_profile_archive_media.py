@@ -133,6 +133,22 @@ async def test_profile_media_failure_propagates_for_retry():
 
 
 @pytest.mark.asyncio
+async def test_worker_preserves_sanitized_storage_failure_stage():
+    class Downloader:
+        async def download_post(self, _, path):
+            path.write_bytes(b"video")
+            return DownloadedAsset(path, 5, "c" * 64, "video/mp4")
+    class Service:
+        async def persist(self, **_):
+            raise SourceUnavailable("profile media storage upload failed")
+    with pytest.raises(SourceUnavailable, match="profile media storage upload failed"):
+        await process_archive_profile_media(
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}},
+            Repo(), Downloader(), Service(),
+        )
+
+
+@pytest.mark.asyncio
 async def test_native_download_is_off_loop_normalizes_output_and_hashes(tmp_path):
     payload = b"\x00\x00\x00\x18ftypisom" + b"video-payload"
     call_threads = []
