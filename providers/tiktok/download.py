@@ -1,120 +1,115 @@
-"""Worker-only TikTok video acquisition using the pinned tt-dlp library."""
+"""Worker-only native TikTok video acquisition."""
 
 import asyncio
 import hashlib
+import mimetypes
 import os
+import tempfile
 from pathlib import Path
 from typing import Callable
 
 from core.media_download import DownloadedAsset
-from providers.base import SourceUnavailable
-
-
-class _InvalidVideoResponse(Exception):
-    """A response was not a usable MP4 video."""
+from providers.base import MediaNotFound, SourceUnavailable, UnsupportedUrl
 
 
 class TikTokMediaDownloader:
-    """Download exactly one concrete public TikTok video without cookies or state."""
+    """Download one concrete public TikTok video with yt-dlp's native path."""
 
-    def __init__(self, client_factory: Callable | None = None):
-        self._client_factory = client_factory or self._build_client
+    def __init__(self, native_download: Callable[[str, Path], None] | None = None):
+        self._native_download = native_download or self._download_with_ytdlp
 
-    async def download_post(self, canonical_url: str, destination: Path):
-        """Resolve and acquire one video off the event loop into ``destination``."""
+    async def download_post(self, canonical_url: str, destination: Path) -> DownloadedAsset:
+        """Run blocking provider work off-loop and normalize its output path."""
         return await asyncio.to_thread(self._download_sync, canonical_url, destination)
 
-    @staticmethod
-    def _build_client(output: Path):
-        from tt_dlp.client import TikTokClient
-        from tt_dlp.models import Settings
-
-        # tt-dlp receives no cookie file and no profile store. Its output setting is
-        # unused here but must be a caller-controlled temporary directory.
-        settings = Settings(
-            output=output,
-            cookies=None,
-            profile_store=None,
-            limit=0,
-            sleep=0,
-            overwrite=True,
-            dry_run=False,
-            stories=False,
-            identify=False,
-        )
-        return TikTokClient(settings)
-
     def _download_sync(self, canonical_url: str, destination: Path) -> DownloadedAsset:
+        self._validate_concrete_video_target(canonical_url)
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="social-saver-tiktok-", dir=destination.parent) as temporary_root:
+                root = Path(temporary_root)
+                try:
+                    self._native_download(canonical_url, root)
+                except OSError:
+                    raise SourceUnavailable("local temporary file failure") from None
+                except Exception:
+                    raise SourceUnavailable("TikTok native download failed") from None
+                return self._normalize_download(root, destination)
+        except (MediaNotFound, SourceUnavailable, UnsupportedUrl):
+            raise
+        except OSError:
+            raise SourceUnavailable("local temporary file failure") from None
+
+    @staticmethod
+    def _validate_concrete_video_target(canonical_url: str) -> None:
         try:
             from tt_dlp.targets import parse_target
 
             target = parse_target(canonical_url)
-            if not target.post_id:
-                raise ValueError("concrete TikTok post is required")
-            client = self._client_factory(destination.parent)
-            item = client.media_from_embed(target.post_id)
-        except Exception as exc:
-            raise SourceUnavailable("TikTok media resolve failed") from exc
-
-        if item.is_photo or not item.video_urls:
-            raise SourceUnavailable("TikTok media validation failed")
-
-        temporary = destination.with_name(destination.name + ".part")
-        validation_failed = False
-        try:
-            temporary.unlink(missing_ok=True)
-            for source_url in item.video_urls:
-                try:
-                    return self._download_url(client, source_url, canonical_url, temporary, destination)
-                except _InvalidVideoResponse:
-                    validation_failed = True
-                    temporary.unlink(missing_ok=True)
-                except Exception:
-                    temporary.unlink(missing_ok=True)
-        finally:
-            temporary.unlink(missing_ok=True)
-
-        if validation_failed:
-            raise SourceUnavailable("TikTok media validation failed")
-        raise SourceUnavailable("TikTok media download failed")
+        except Exception:
+            raise UnsupportedUrl("TikTok target resolution failed") from None
+        if not target.post_id:
+            raise UnsupportedUrl("TikTok target resolution failed")
+        if target.media_kind == "photo":
+            raise MediaNotFound("TikTok produced no video")
 
     @staticmethod
-    def _download_url(client, source_url: str, referer: str, temporary: Path, destination: Path) -> DownloadedAsset:
-        digest = hashlib.sha256()
-        size = 0
-        with client.request(source_url, headers={"Referer": referer}, attempts=1) as response:
-            content_type = TikTokMediaDownloader._content_type(response)
-            first = response.read(16 * 1024)
-            if not TikTokMediaDownloader._is_mp4(first, content_type):
-                raise _InvalidVideoResponse()
-            with temporary.open("wb") as output:
-                output.write(first)
-                digest.update(first)
-                size += len(first)
-                while chunk := response.read(256 * 1024):
-                    output.write(chunk)
+    def _download_with_ytdlp(canonical_url: str, output: Path) -> None:
+        from yt_dlp import YoutubeDL
+
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "cachedir": False,
+            "retries": 1,
+            "fragment_retries": 1,
+            "outtmpl": str(output / "video.%(ext)s"),
+        }
+        with YoutubeDL(options) as downloader:
+            downloader.extract_info(canonical_url, download=True)
+
+    @staticmethod
+    def _normalize_download(root: Path, destination: Path) -> DownloadedAsset:
+        candidates = [
+            path for path in root.rglob("*")
+            if path.is_file() and not path.name.endswith(".part")
+        ]
+        video_candidates = [path for path in candidates if TikTokMediaDownloader._is_mp4_file(path)]
+        if not video_candidates:
+            if candidates:
+                raise MediaNotFound("TikTok media validation failed")
+            raise MediaNotFound("TikTok produced no video")
+        if len(video_candidates) != 1:
+            raise SourceUnavailable("TikTok native download failed")
+        source = video_candidates[0]
+        temporary = destination.with_name(destination.name + ".part")
+        try:
+            digest = hashlib.sha256()
+            size = 0
+            with source.open("rb") as input_file, temporary.open("wb") as output_file:
+                while chunk := input_file.read(256 * 1024):
+                    output_file.write(chunk)
                     digest.update(chunk)
                     size += len(chunk)
-        if size == 0:
-            raise _InvalidVideoResponse()
-        os.replace(temporary, destination)
+            if size == 0:
+                raise MediaNotFound("TikTok media validation failed")
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        content_type = mimetypes.guess_type(destination.name)[0] or "video/mp4"
         return DownloadedAsset(destination, size, digest.hexdigest(), content_type)
 
     @staticmethod
-    def _content_type(response) -> str | None:
-        headers = response.headers
-        if hasattr(headers, "get_content_type"):
-            return headers.get_content_type().lower()
-        value = headers.get("content-type") if hasattr(headers, "get") else None
-        return value.lower() if isinstance(value, str) else None
-
-    @staticmethod
-    def _is_mp4(first: bytes, content_type: str | None) -> bool:
+    def _is_mp4_file(path: Path) -> bool:
+        try:
+            with path.open("rb") as file:
+                first = file.read(32)
+        except OSError:
+            return False
         stripped = first.lstrip().lower()
-        if not first or (content_type and (content_type.startswith("text/") or content_type in {
-            "application/json", "application/javascript", "application/xml",
-        })):
-            return False
-        if stripped.startswith((b"<!doctype html", b"<html", b"{")):
-            return False
-        return len(first) >= 8 and first[4:8] == b"ftyp"
+        return (
+            len(first) >= 8
+            and first[4:8] == b"ftyp"
+            and not stripped.startswith((b"<!doctype html", b"<html", b"{"))
+        )

@@ -11,9 +11,8 @@ import apps.api.main as api
 from apps.worker.processors.profile_archive_media import process_archive_profile_media
 from core.media_download import DownloadedAsset
 from core.profile_archive_media import ProfileArchiveMediaService
-from providers.base import SourceUnavailable
+from providers.base import MediaNotFound, SourceUnavailable
 from providers.tiktok.download import TikTokMediaDownloader
-from tt_dlp.models import MediaItem
 
 PROFILE = UUID("11111111-1111-1111-1111-111111111111")
 POST = UUID("22222222-2222-2222-2222-222222222222")
@@ -31,35 +30,6 @@ class Repo:
     async def get_stored_object_by_sha(self, sha): return self.stored
     async def create_stored_object(self, *args): self.calls.append(("create", args)); return UUID("66666666-6666-6666-6666-666666666666")
     async def attach_owned_archived_post_media_object(self, *args): self.calls.append(("attach", args)); return ASSET
-
-
-class FakeHeaders:
-    def __init__(self, content_type="video/mp4"): self.content_type = content_type
-    def get_content_type(self): return self.content_type
-
-
-class FakeResponse:
-    def __init__(self, payload, content_type="video/mp4"):
-        self.payload, self.headers, self.offset = payload, FakeHeaders(content_type), 0
-    def __enter__(self): return self
-    def __exit__(self, *_): return False
-    def read(self, amount=-1):
-        if amount < 0:
-            amount = len(self.payload) - self.offset
-        value = self.payload[self.offset:self.offset + amount]
-        self.offset += len(value)
-        return value
-
-
-class FakeTikTokClient:
-    def __init__(self, item, response):
-        self.item, self.response, self.calls = item, response, []
-    def media_from_embed(self, post_id):
-        self.calls.append(("resolve", post_id, threading.get_ident()))
-        return self.item
-    def request(self, url, **kwargs):
-        self.calls.append(("download", kwargs, threading.get_ident()))
-        return self.response
 
 
 @pytest.mark.asyncio
@@ -135,11 +105,14 @@ async def test_profile_media_failure_propagates_for_retry():
 
 
 @pytest.mark.asyncio
-async def test_tt_dlp_video_download_is_off_loop_and_hashes_temp_file(tmp_path):
+async def test_native_download_is_off_loop_normalizes_output_and_hashes(tmp_path):
     payload = b"\x00\x00\x00\x18ftypisom" + b"video-payload"
-    item = MediaItem(post_id="7176363825556376859", description="video", video_urls=("https://media.invalid/video",))
-    client = FakeTikTokClient(item, FakeResponse(payload))
-    downloader = TikTokMediaDownloader(client_factory=lambda _: client)
+    call_threads = []
+    def native_download(_, root):
+        call_threads.append(threading.get_ident())
+        (root / "provider-name.mp4").write_bytes(payload)
+        (root / "provider-metadata.json").write_text("{}")
+    downloader = TikTokMediaDownloader(native_download=native_download)
     destination = tmp_path / "video.mp4"
     loop_thread = threading.get_ident()
 
@@ -148,31 +121,48 @@ async def test_tt_dlp_video_download_is_off_loop_and_hashes_temp_file(tmp_path):
     assert downloaded.path == destination and downloaded.size_bytes == len(payload)
     assert downloaded.sha256 == hashlib.sha256(payload).hexdigest()
     assert downloaded.content_type == "video/mp4" and destination.read_bytes() == payload
-    assert {call[2] for call in client.calls} != {loop_thread}
+    assert call_threads != [loop_thread]
     assert not destination.with_name(destination.name + ".part").exists()
+    assert not list(tmp_path.glob("social-saver-tiktok-*"))
 
 
-def test_tt_dlp_client_has_no_cookie_or_profile_state(tmp_path):
-    client = TikTokMediaDownloader._build_client(tmp_path)
-    assert client.settings.cookies is None and client.settings.profile_store is None
-    assert not client.has_cookies
+def test_native_ytdlp_disables_cache_and_cookie_options(monkeypatch, tmp_path):
+    import yt_dlp
+    captured = {}
+    class FakeYDL:
+        def __init__(self, options): captured.update(options)
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+        def extract_info(self, _, download):
+            assert download is True
+            Path(captured["outtmpl"].replace("%(ext)s", "mp4")).write_bytes(b"video")
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", FakeYDL)
+    TikTokMediaDownloader._download_with_ytdlp("https://www.tiktok.com/@aliachin11/video/7176363825556376859", tmp_path)
+    assert captured["cachedir"] is False and "cookiefile" not in captured and "cookiesfrombrowser" not in captured
+    assert Path(captured["outtmpl"]).parent == tmp_path
 
 
 @pytest.mark.asyncio
-async def test_tt_dlp_rejects_non_video_and_cleans_failed_download(tmp_path):
-    photo = MediaItem(post_id="7176363825556376859", description="photo", image_count=1)
-    photo_client = FakeTikTokClient(photo, FakeResponse(b"unused"))
+async def test_native_download_rejects_photo_invalid_output_and_safe_errors(tmp_path):
     destination = tmp_path / "photo.mp4"
-    with pytest.raises(SourceUnavailable, match="TikTok media validation failed"):
-        await TikTokMediaDownloader(client_factory=lambda _: photo_client).download_post(
-            "https://www.tiktok.com/@aliachin11/video/7176363825556376859", destination
+    with pytest.raises(MediaNotFound, match="TikTok produced no video"):
+        await TikTokMediaDownloader().download_post(
+            "https://www.tiktok.com/@aliachin11/photo/7176363825556376859", destination
         )
-    assert not photo_client.calls[1:] and not destination.exists()
-
-    video = MediaItem(post_id="7176363825556376859", description="video", video_urls=("https://media.invalid/video",))
-    invalid_client = FakeTikTokClient(video, FakeResponse(b"<html>not media</html>", "text/html"))
-    with pytest.raises(SourceUnavailable, match="TikTok media validation failed"):
-        await TikTokMediaDownloader(client_factory=lambda _: invalid_client).download_post(
+    def invalid(_, root): (root / "provider.mp4").write_bytes(b"<html>not media</html>")
+    with pytest.raises(MediaNotFound, match="TikTok media validation failed"):
+        await TikTokMediaDownloader(native_download=invalid).download_post(
             "https://www.tiktok.com/@aliachin11/video/7176363825556376859", destination
         )
     assert not destination.exists() and not destination.with_name(destination.name + ".part").exists()
+    def empty(_, root): (root / "provider.mp4").write_bytes(b"")
+    with pytest.raises(MediaNotFound, match="TikTok media validation failed"):
+        await TikTokMediaDownloader(native_download=empty).download_post(
+            "https://www.tiktok.com/@aliachin11/video/7176363825556376859", destination
+        )
+    def failing(_, __): raise RuntimeError("https://provider.invalid/private")
+    with pytest.raises(SourceUnavailable, match="TikTok native download failed") as error:
+        await TikTokMediaDownloader(native_download=failing).download_post(
+            "https://www.tiktok.com/@aliachin11/video/7176363825556376859", destination
+        )
+    assert "https://" not in str(error.value)

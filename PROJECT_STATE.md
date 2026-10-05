@@ -35,9 +35,9 @@ Updated for v3.8.
 ## Profile archive media persistence — 2026-10-05
 
 - Profile video assets can be queued only by their owning Telegram-authenticated
-  tenant. A worker uses pinned tt-dlp without cookies or profile state to acquire
-  one concrete TikTok video into temporary storage, SHA-256 deduplicates into the
-  existing private R2 object store, and attaches the shared object to the profile asset.
+  tenant. A worker uses yt-dlp's native no-cookie download path for one concrete
+  TikTok video into temporary storage, SHA-256 deduplicates into the existing
+  private R2 object store, and attaches the shared object to the profile asset.
 - Browser post lists expose only `has_archived_media`; playback mints a
   tenant-authorized short-lived URL without exposing provider URLs, storage keys,
   object IDs, or hashes. Photo/carousel persistence remains intentionally out of scope.

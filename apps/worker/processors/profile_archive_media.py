@@ -2,7 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from core.profile_archive_media import ProfileArchiveMediaService
-from providers.base import SourceUnavailable
+from providers.base import SourceUnavailable, TerminalProviderError
 from providers.tiktok.download import TikTokMediaDownloader
 
 
@@ -27,6 +27,8 @@ async def process_archive_profile_media(job, repo, downloader=None, media_servic
                 continue
             try:
                 downloaded = await downloader.download_post(asset["original_url"], root / f"{asset['id']}.mp4")
+            except TerminalProviderError:
+                raise
             except SourceUnavailable:
                 raise
             except Exception as exc:
