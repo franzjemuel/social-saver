@@ -7,7 +7,14 @@ from core.repository import Repository
 from providers.base import ArchivedPost
 from providers.tiktok.importer import TikTokProfileImporter
 from providers.tiktok.normalize import normalize_tiktok_post, normalize_tiktok_profile
+from providers.base import SourceUnavailable
 from providers.tiktok.provider import DEVELOPMENT_MAX_POSTS, TikTokProfileProvider
+from providers.tiktok.scanner import (
+    TikTokProfileScan,
+    TikTokProfileScanner,
+    TikTokScannedPost,
+    TikTokScannedProfile,
+)
 
 
 BENCHMARK_ENTRY = {
@@ -53,22 +60,122 @@ def test_tiktok_post_is_provider_neutral_and_has_media_assets():
 
 
 @pytest.mark.asyncio
-async def test_profile_discovery_enforces_development_limit_before_network():
-    calls = []
-
-    def extract(url, limit):
-        calls.append((url, limit))
-        return {"entries": [BENCHMARK_ENTRY]}
-
-    provider = TikTokProfileProvider(extract)
+async def test_profile_discovery_enforces_development_limit_after_scanning():
+    scanner = FakeScanner(post_count=13)
+    resolver = FakeResolver()
+    provider = TikTokProfileProvider(scanner, resolver)
     with pytest.raises(ValueError):
         await provider.discover_profile("@aliachin11", limit=DEVELOPMENT_MAX_POSTS + 1)
-    assert calls == []
+    assert scanner.calls == []
 
-    profile, posts = await provider.discover_profile("@aliachin11", limit=1)
+    profile, posts = await provider.discover_profile("@aliachin11", limit=DEVELOPMENT_MAX_POSTS)
     assert profile.platform_account_id == "7055967621082039297"
-    assert len(posts) == 1
-    assert calls == [("https://www.tiktok.com/@aliachin11", 1)]
+    assert profile.metadata["sec_uid"] == "MS4wLjABAAAAbenchmarkSecUidValue"
+    assert len(posts) == DEVELOPMENT_MAX_POSTS
+    assert scanner.calls == ["aliachin11"]
+    assert len(resolver.urls) == DEVELOPMENT_MAX_POSTS
+    assert all("/@aliachin11/video/" in url for url in resolver.urls)
+
+
+class FakeIdentity:
+    username = "aliachin11"
+    user_id = "7055967621082039297"
+    sec_uid = "MS4wLjABAAAAbenchmarkSecUidValue"
+
+
+class FakeItem:
+    def __init__(self, post_id, *, photo=False):
+        self.post_id = post_id
+        self.is_photo = photo
+        self.description = "scanner caption"
+
+
+class FakeScannerClient:
+    def __init__(self):
+        self.calls = []
+
+    def creator_data(self, username):
+        self.calls.append(("creator", username))
+        return {"userInfo": {"code": 0}, "videoList": []}
+
+    def identity_from_creator(self, creator):
+        return FakeIdentity()
+
+    def collect_posts(self, sec_uid, *, profile_url, recent, is_private):
+        self.calls.append(("collect", sec_uid, profile_url, recent, is_private))
+        return [FakeItem("7176363825556376859"), FakeItem("7176363825556376860", photo=True)]
+
+
+def test_tt_dlp_scanner_normalizes_identity_and_canonical_post_urls_without_cookies():
+    client = FakeScannerClient()
+    scan = TikTokProfileScanner(lambda: client).scan("aliachin11")
+
+    assert scan.profile.user_id == "7055967621082039297"
+    assert scan.profile.sec_uid == "MS4wLjABAAAAbenchmarkSecUidValue"
+    assert [post.canonical_url for post in scan.posts] == [
+        "https://www.tiktok.com/@aliachin11/video/7176363825556376859",
+        "https://www.tiktok.com/@aliachin11/photo/7176363825556376860",
+    ]
+    assert client.calls[0] == ("creator", "aliachin11")
+    assert client.calls[1][-1] is False
+
+
+def test_default_scanner_configuration_never_loads_cookies_or_authentication():
+    source = inspect.getsource(TikTokProfileScanner._default_client)
+
+    assert "cookies=None" in source
+    assert "profile_store=None" in source
+    assert "authenticated" not in source
+
+
+class FakeScanner:
+    def __init__(self, post_count=2):
+        self.post_count = post_count
+        self.calls = []
+
+    def scan(self, username):
+        self.calls.append(username)
+        return TikTokProfileScan(
+            profile=TikTokScannedProfile(
+                username="aliachin11", user_id="7055967621082039297",
+                sec_uid="MS4wLjABAAAAbenchmarkSecUidValue",
+            ),
+            posts=[TikTokScannedPost(
+                post_id=str(7176363825556376859 + index),
+                canonical_url=f"https://www.tiktok.com/@aliachin11/video/{7176363825556376859 + index}",
+                is_photo=False,
+                description="scanner caption",
+            ) for index in range(self.post_count)],
+        )
+
+
+class FakeResolver:
+    def __init__(self, failing_ids=()):
+        self.urls = []
+        self.failing_ids = set(failing_ids)
+
+    async def resolve(self, url):
+        self.urls.append(url)
+        post_id = url.rsplit("/", 1)[-1]
+        if post_id in self.failing_ids:
+            raise SourceUnavailable("metadata unavailable")
+        return {**BENCHMARK_ENTRY, "id": post_id, "webpage_url": url}
+
+
+@pytest.mark.asyncio
+async def test_per_post_yt_dlp_failure_keeps_scanned_post_and_other_metadata():
+    scanner = FakeScanner(post_count=2)
+    failed = str(7176363825556376860)
+    resolver = FakeResolver(failing_ids={failed})
+
+    profile, posts = await TikTokProfileProvider(scanner, resolver).discover_profile("@aliachin11", limit=2)
+
+    assert profile.platform_account_id == "7055967621082039297"
+    assert [post.platform_post_id for post in posts] == ["7176363825556376859", failed]
+    assert posts[0].engagement.view_count == 281
+    assert posts[1].metadata["metadata_resolution_error"] == "SourceUnavailable"
+    assert posts[1].original_url.endswith(failed)
+    assert resolver.urls == [post.original_url for post in posts]
 
 
 class FakeProvider:

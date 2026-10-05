@@ -6,8 +6,9 @@ Updated for v3.8.
 
 - Added a provider-neutral, tenant-private profile archive schema: profiles,
   posts, multi-asset media, and historical engagement snapshots (migration 022).
-- Added a metadata-only TikTok adapter using the Python `yt-dlp` API, with a
-  local 12-post development cap and no TikTok network calls in tests.
+- Added a metadata-only TikTok adapter with a pinned `tt-dlp` profile scanner
+  and Python `yt-dlp` per-post resolver, with a local 12-post development cap
+  and no TikTok network calls in tests.
 - Normalized TikTok post/profile fields include the stable account ID, caption,
   original publication time, media duration/thumbnail, and supported engagement
   metrics. A disappeared upstream post can be marked absent without deleting its
@@ -15,6 +16,9 @@ Updated for v3.8.
 - This is not a customer-facing UI, worker media-download implementation, or
   hosted acceptance result. No Instagram behavior, provider sessions, or
   deployment configuration changed.
+- Local public benchmark acceptance for `@aliachin11` passed without cookies,
+  authentication, or media downloads: tt-dlp resolved the expected numeric
+  account ID and secUid, selected 12 posts, and yt-dlp enriched all 12.
 
 ## Completed
 Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; private R2 archive; separate bot/API/worker services; server-validated Telegram Mini App auth; tenant-scoped reads; shared save pipeline; idempotency/job status; archive browse/detail/download; entitlements/Stars; Saved Friends/story polling; rate limits/monitoring; session vault; Live reliability/security foundations; Railway staging scaffolding; CI/release gates; executable offline staging readiness report with migration floor 020 and service-specific secret boundaries; tenant-safe asynchronous archive deletion with worker-owned R2 cleanup; full asynchronous account deletion with immediate watch/archive disablement and shared-object-safe R2 purge.
