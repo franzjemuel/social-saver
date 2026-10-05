@@ -2,6 +2,25 @@
 
 Updated for v3.8.
 
+## Profile archive foundation — 2026-10-04
+
+- Added a provider-neutral, tenant-private profile archive schema: profiles,
+  posts, multi-asset media, and historical engagement snapshots (migration 022).
+- Added a metadata-only TikTok adapter with an off-event-loop, pinned `tt-dlp`
+  profile scanner and Python `yt-dlp` per-post resolver, with a local 12-post
+  development cap and no TikTok network calls in tests. Scanner-confirmed
+  photo posts preserve their type and do not get invented video assets.
+- Normalized TikTok post/profile fields include the stable account ID, caption,
+  original publication time, media duration/thumbnail, and supported engagement
+  metrics. A disappeared upstream post can be marked absent without deleting its
+  preserved archive record.
+- This is not a customer-facing UI, worker media-download implementation, or
+  hosted acceptance result. No Instagram behavior, provider sessions, or
+  deployment configuration changed.
+- Local public benchmark acceptance for `@aliachin11` passed without cookies,
+  authentication, or media downloads: tt-dlp resolved the expected numeric
+  account ID and secUid, selected 12 posts, and yt-dlp enriched all 12.
+
 ## Completed
 Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; private R2 archive; separate bot/API/worker services; server-validated Telegram Mini App auth; tenant-scoped reads; shared save pipeline; idempotency/job status; archive browse/detail/download; entitlements/Stars; Saved Friends/story polling; rate limits/monitoring; session vault; Live reliability/security foundations; Railway staging scaffolding; CI/release gates; executable offline staging readiness report with migration floor 020 and service-specific secret boundaries; tenant-safe asynchronous archive deletion with worker-owned R2 cleanup; full asynchronous account deletion with immediate watch/archive disablement and shared-object-safe R2 purge.
 
@@ -32,7 +51,7 @@ Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; priv
 Real Instagram extraction/session behavior is not yet proven on staging. Live still needs network-level egress restrictions. Public beta needs finalized privacy/terms and explicit backup/log/payment retention periods. Pricing needs real traffic cost measurements.
 
 ## Next action
-Use the persistent GitHub repository as source of truth, run `python scripts/staging-readiness.py`, then execute the hosted staging launch gate in `docs/staging-launch-v33.md`. Do not implement Facebook until it passes.
+Use the persistent GitHub repository as source of truth, run `python scripts/staging-readiness.py`, then execute the hosted staging launch gate in `docs/staging-launch-v33.md`. Do not implement Facebook extraction until it passes. The next profile-archive increment should add a tenant-authenticated import job/API and worker-owned media persistence after review of this schema.
 
 - v3.6 closed a Telegram-bot archive deletion regression: bot and Mini App now both queue worker-only physical R2 cleanup.
 

@@ -55,3 +55,63 @@ class WatchProvider(ABC):
     async def resolve_target(self, target: str) -> tuple[str, str]: ...
     @abstractmethod
     async def discover(self, target_key: str, cursor: dict[str, Any], limit: int = 12) -> tuple[list[DiscoveredMedia], dict[str, Any]]: ...
+
+
+@dataclass(frozen=True)
+class ArchiveMediaAsset:
+    """A provider-neutral media asset belonging to a mirrored profile post.
+
+    ``source_url`` is intentionally only an ephemeral acquisition hint. Long-lived
+    archive bytes are stored by the worker, never by a provider implementation.
+    """
+    position: int
+    asset_type: str
+    source_url: str | None = None
+    thumbnail_url: str | None = None
+    duration_seconds: float | None = None
+    width: int | None = None
+    height: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class EngagementSnapshot:
+    observed_at: datetime
+    view_count: int | None = None
+    like_count: int | None = None
+    comment_count: int | None = None
+    repost_count: int | None = None
+    share_count: int | None = None
+    save_count: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ArchivedProfile:
+    platform: str
+    platform_account_id: str
+    username: str
+    display_name: str | None = None
+    bio: str | None = None
+    avatar_url: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ArchivedPost:
+    platform_post_id: str
+    original_url: str
+    media_type: str
+    assets: list[ArchiveMediaAsset]
+    caption: str | None = None
+    published_at: datetime | None = None
+    thumbnail_url: str | None = None
+    engagement: EngagementSnapshot | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class ProfileArchiveProvider(ABC):
+    """Discovers and normalizes profile metadata without downloading media."""
+
+    @abstractmethod
+    async def discover_profile(self, target: str, *, limit: int = 12) -> tuple[ArchivedProfile, list[ArchivedPost]]: ...
