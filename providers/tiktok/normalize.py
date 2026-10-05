@@ -63,10 +63,13 @@ def normalize_tiktok_profile(metadata: dict[str, Any], username: str) -> Archive
     )
 
 
-def normalize_tiktok_post(metadata: dict[str, Any], *, observed_at: datetime | None = None) -> ArchivedPost:
+def normalize_tiktok_post(
+    metadata: dict[str, Any], *, observed_at: datetime | None = None,
+    is_photo: bool = False, canonical_url: str | None = None,
+) -> ArchivedPost:
     """Normalize one yt-dlp TikTok entry; retain only controlled provider detail."""
     post_id = _text(metadata.get("id"))
-    original_url = _url(metadata.get("webpage_url") or metadata.get("original_url"))
+    original_url = canonical_url or _url(metadata.get("webpage_url") or metadata.get("original_url"))
     if not post_id or not original_url:
         raise SourceUnavailable("TikTok metadata did not include a post ID and original URL")
     observed_at = observed_at or datetime.now(timezone.utc)
@@ -74,21 +77,22 @@ def normalize_tiktok_post(metadata: dict[str, Any], *, observed_at: datetime | N
     duration_seconds = float(duration) if isinstance(duration, (int, float)) and not isinstance(duration, bool) else None
     thumbnail = _url(metadata.get("thumbnail"))
     media_url = _url(metadata.get("url"))
+    assets = [] if is_photo else [ArchiveMediaAsset(
+        position=0,
+        asset_type="video",
+        source_url=media_url,
+        thumbnail_url=thumbnail,
+        duration_seconds=duration_seconds,
+        metadata={"format_id": _text(metadata.get("format_id"))},
+    )]
     return ArchivedPost(
         platform_post_id=post_id,
         original_url=original_url,
-        media_type="video",
+        media_type="photo" if is_photo else "video",
         caption=_text(metadata.get("description") or metadata.get("title")),
         published_at=_published_at(metadata),
         thumbnail_url=thumbnail,
-        assets=[ArchiveMediaAsset(
-            position=0,
-            asset_type="video",
-            source_url=media_url,
-            thumbnail_url=thumbnail,
-            duration_seconds=duration_seconds,
-            metadata={"format_id": _text(metadata.get("format_id"))},
-        )],
+        assets=assets,
         engagement=EngagementSnapshot(
             observed_at=observed_at,
             view_count=_count(metadata.get("view_count")),

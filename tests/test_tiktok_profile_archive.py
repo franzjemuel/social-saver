@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import inspect
+import threading
 
 import pytest
 
@@ -73,6 +74,7 @@ async def test_profile_discovery_enforces_development_limit_after_scanning():
     assert profile.metadata["sec_uid"] == "MS4wLjABAAAAbenchmarkSecUidValue"
     assert len(posts) == DEVELOPMENT_MAX_POSTS
     assert scanner.calls == ["aliachin11"]
+    assert scanner.thread_ids[0] != threading.get_ident()
     assert len(resolver.urls) == DEVELOPMENT_MAX_POSTS
     assert all("/@aliachin11/video/" in url for url in resolver.urls)
 
@@ -129,12 +131,15 @@ def test_default_scanner_configuration_never_loads_cookies_or_authentication():
 
 
 class FakeScanner:
-    def __init__(self, post_count=2):
+    def __init__(self, post_count=2, photo_indices=()):
         self.post_count = post_count
+        self.photo_indices = set(photo_indices)
         self.calls = []
+        self.thread_ids = []
 
     def scan(self, username):
         self.calls.append(username)
+        self.thread_ids.append(threading.get_ident())
         return TikTokProfileScan(
             profile=TikTokScannedProfile(
                 username="aliachin11", user_id="7055967621082039297",
@@ -142,8 +147,11 @@ class FakeScanner:
             ),
             posts=[TikTokScannedPost(
                 post_id=str(7176363825556376859 + index),
-                canonical_url=f"https://www.tiktok.com/@aliachin11/video/{7176363825556376859 + index}",
-                is_photo=False,
+                canonical_url=(
+                    f"https://www.tiktok.com/@aliachin11/"
+                    f"{'photo' if index in self.photo_indices else 'video'}/{7176363825556376859 + index}"
+                ),
+                is_photo=index in self.photo_indices,
                 description="scanner caption",
             ) for index in range(self.post_count)],
         )
@@ -176,6 +184,20 @@ async def test_per_post_yt_dlp_failure_keeps_scanned_post_and_other_metadata():
     assert posts[1].metadata["metadata_resolution_error"] == "SourceUnavailable"
     assert posts[1].original_url.endswith(failed)
     assert resolver.urls == [post.original_url for post in posts]
+
+
+@pytest.mark.asyncio
+async def test_scanner_confirmed_photo_keeps_type_and_never_gets_video_asset():
+    scanner = FakeScanner(post_count=2, photo_indices={1})
+    resolver = FakeResolver()
+
+    _, posts = await TikTokProfileProvider(scanner, resolver).discover_profile("@aliachin11", limit=2)
+
+    assert posts[0].media_type == "video"
+    assert posts[0].assets[0].asset_type == "video"
+    assert posts[1].media_type == "photo"
+    assert posts[1].assets == []
+    assert posts[1].original_url == resolver.urls[1]
 
 
 class FakeProvider:

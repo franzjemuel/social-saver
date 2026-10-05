@@ -1,3 +1,4 @@
+import asyncio
 import re
 
 from providers.base import ArchivedPost, ArchivedProfile, ProfileArchiveProvider, SourceUnavailable, UnsupportedUrl
@@ -35,7 +36,7 @@ class TikTokProfileProvider(ProfileArchiveProvider):
         if not 1 <= limit <= DEVELOPMENT_MAX_POSTS:
             raise ValueError(f"TikTok profile imports must request 1-{DEVELOPMENT_MAX_POSTS} posts during development")
         username, _ = normalize_tiktok_profile_target(target)
-        scan = self.scanner.scan(username)
+        scan = await asyncio.to_thread(self.scanner.scan, username)
         profile = ArchivedProfile(
             platform="tiktok",
             platform_account_id=scan.profile.user_id,
@@ -46,7 +47,10 @@ class TikTokProfileProvider(ProfileArchiveProvider):
         for scanned in scan.posts[:limit]:
             try:
                 metadata = await self.metadata_resolver.resolve(scanned.canonical_url)
-                posts.append(normalize_tiktok_post(metadata))
+                posts.append(normalize_tiktok_post(
+                    metadata, is_photo=scanned.is_photo,
+                    canonical_url=scanned.canonical_url,
+                ))
             except SourceUnavailable as exc:
                 posts.append(normalize_scanned_tiktok_post(
                     scanned.post_id, scanned.canonical_url, is_photo=scanned.is_photo,

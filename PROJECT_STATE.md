@@ -6,9 +6,10 @@ Updated for v3.8.
 
 - Added a provider-neutral, tenant-private profile archive schema: profiles,
   posts, multi-asset media, and historical engagement snapshots (migration 022).
-- Added a metadata-only TikTok adapter with a pinned `tt-dlp` profile scanner
-  and Python `yt-dlp` per-post resolver, with a local 12-post development cap
-  and no TikTok network calls in tests.
+- Added a metadata-only TikTok adapter with an off-event-loop, pinned `tt-dlp`
+  profile scanner and Python `yt-dlp` per-post resolver, with a local 12-post
+  development cap and no TikTok network calls in tests. Scanner-confirmed
+  photo posts preserve their type and do not get invented video assets.
 - Normalized TikTok post/profile fields include the stable account ID, caption,
   original publication time, media duration/thumbnail, and supported engagement
   metrics. A disappeared upstream post can be marked absent without deleting its
