@@ -31,6 +31,9 @@
 - [ ] Abuse/takedown/support workflow.
 
 ## P3 expansion
+- [x] Add provider-neutral private profile archive schema and bounded TikTok metadata normalizer (v3.9 foundation).
+- [ ] Add a tenant-authenticated profile-import job/API and worker-owned TikTok media persistence after schema review.
+- [ ] Build private profile archive browse/detail UI with preserved-upstream-removal status.
 - [ ] Facebook provider adapter after Instagram launch gate.
 - [ ] Facebook Stories through existing watch/archive contracts.
 

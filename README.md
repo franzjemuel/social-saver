@@ -19,6 +19,19 @@ python -m pip install -e '.[dev]'
 ./scripts/check-package.sh
 ```
 
+The profile-mirror foundation has a metadata-only local importer. It uses a
+database tenant selected by the local operator; it neither downloads video
+bytes nor runs in the bot/API path:
+
+```sh
+DATABASE_URL=postgresql://... \
+SOCIAL_SAVER_ARCHIVE_USER_ID=<existing-app-user-uuid> \
+python -m providers.tiktok @aliachin11 --limit 12
+```
+
+The development cap is 12 posts. This command is for an authorized local
+benchmark import; deterministic tests use fixture metadata and never contact TikTok.
+
 Verification uses blank example configuration for Compose validation, not real
 credentials. Container builds require a working Docker engine:
 
@@ -34,7 +47,7 @@ docker build -t social-saver-api:local -f Dockerfile.api .
 - Worker owns modular Instagram extraction, downloads, Telegram delivery, R2
   writes, Saved Friends/autosaving and bounded FFmpeg processing.
 - Tenant-scoped archive/job APIs, Telegram Stars billing and entitlements,
-  encrypted provider sessions, archive/account deletion and migrations 001–020
+  encrypted provider sessions, archive/account deletion and migrations 001–022
   are retained from the supplied archive.
 - Live remains gated pending network egress isolation and staging validation.
   Facebook remains a future provider behind the existing interface.
@@ -47,7 +60,7 @@ See [architecture](docs/architecture.md), [project state](PROJECT_STATE.md),
 Follow the [current staging handoff](docs/staging-handoff.md) and
 [staging launch sequence](docs/staging-launch-v33.md). Configure separate
 bot/API/worker secrets following [least privilege](docs/least-privilege-secrets-v38.md).
-Use all 20 migrations in order through the controlled staging release script;
+Use all 22 migrations in order through the controlled staging release script;
 never follow historical instructions to apply only migration 001.
 
 No service is deployed merely by importing this repository. Connect staging to a

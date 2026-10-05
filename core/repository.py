@@ -102,6 +102,96 @@ class Repository:
                     )
                 return item_id
 
+    async def upsert_archived_profile(self, user_id, profile):
+        """Create or refresh a private mirrored social account for one tenant."""
+        return await self.pool.fetchval(
+            """insert into archived_profiles
+                (user_id,platform,platform_account_id,username,display_name,bio,avatar_url,metadata)
+               values($1,$2,$3,$4,$5,$6,$7,$8)
+               on conflict(user_id,platform,platform_account_id) do update set
+                 username=excluded.username, display_name=excluded.display_name,
+                 bio=excluded.bio, avatar_url=excluded.avatar_url,
+                 metadata=excluded.metadata, last_observed_at=now()
+               returning id""",
+            user_id, profile.platform, profile.platform_account_id, profile.username,
+            profile.display_name, profile.bio, profile.avatar_url, profile.metadata,
+        )
+
+    async def upsert_archived_post(self, user_id, archived_profile_id, post):
+        """Refresh one post and its metadata without ever deleting archived history.
+
+        The profile ownership check is intentionally in this repository boundary,
+        rather than trusting a profile id received from a caller.
+        """
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                owned = await con.fetchval(
+                    "select id from archived_profiles where id=$1 and user_id=$2",
+                    archived_profile_id, user_id,
+                )
+                if owned is None:
+                    raise PermissionError("Archived profile not found")
+                row = await con.fetchrow(
+                    """insert into archived_posts
+                        (archived_profile_id,platform_post_id,original_url,media_type,caption,
+                         published_at,thumbnail_url,is_present_on_original,metadata)
+                       values($1,$2,$3,$4,$5,$6,$7,true,$8)
+                       on conflict(archived_profile_id,platform_post_id) do update set
+                         original_url=excluded.original_url, media_type=excluded.media_type,
+                         caption=excluded.caption, published_at=excluded.published_at,
+                         thumbnail_url=excluded.thumbnail_url,
+                         is_present_on_original=true, last_observed_at=now(),
+                         metadata=excluded.metadata
+                       returning id, (xmax = 0) as created""",
+                    archived_profile_id, post.platform_post_id, post.original_url,
+                    post.media_type, post.caption, post.published_at, post.thumbnail_url,
+                    post.metadata,
+                )
+                post_id = row["id"]
+                for asset in post.assets:
+                    await con.execute(
+                        """insert into archived_post_media_assets
+                            (archived_post_id,position,asset_type,source_url,thumbnail_url,
+                             duration_seconds,width,height,metadata)
+                           values($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                           on conflict(archived_post_id,position) do update set
+                             asset_type=excluded.asset_type, source_url=excluded.source_url,
+                             thumbnail_url=excluded.thumbnail_url,
+                             duration_seconds=excluded.duration_seconds, width=excluded.width,
+                             height=excluded.height, metadata=excluded.metadata""",
+                        post_id, asset.position, asset.asset_type, asset.source_url,
+                        asset.thumbnail_url, asset.duration_seconds, asset.width,
+                        asset.height, asset.metadata,
+                    )
+                if post.engagement is not None:
+                    metric = post.engagement
+                    await con.execute(
+                        """insert into archived_post_engagement_snapshots
+                            (archived_post_id,observed_at,view_count,like_count,comment_count,
+                             repost_count,share_count,save_count,metadata)
+                           values($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                           on conflict(archived_post_id,observed_at) do update set
+                             view_count=excluded.view_count, like_count=excluded.like_count,
+                             comment_count=excluded.comment_count, repost_count=excluded.repost_count,
+                             share_count=excluded.share_count, save_count=excluded.save_count,
+                             metadata=excluded.metadata""",
+                        post_id, metric.observed_at, metric.view_count, metric.like_count,
+                        metric.comment_count, metric.repost_count, metric.share_count,
+                        metric.save_count, metric.metadata,
+                    )
+                return post_id, bool(row["created"])
+
+    async def mark_archived_post_not_present(self, user_id, archived_profile_id, platform_post_id):
+        """Keep a historical copy while recording that it vanished at the source."""
+        return await self.pool.fetchval(
+            """update archived_posts post set is_present_on_original=false
+               from archived_profiles profile
+               where post.archived_profile_id=profile.id and profile.user_id=$1
+                 and profile.id=$2 and post.platform_post_id=$3
+               returning post.id""",
+            user_id, archived_profile_id, platform_post_id,
+        )
+
     async def update_asset_storage(self, media_item_id, position, *, size_bytes, sha256, storage_provider=None, storage_key=None):
         await self.pool.execute(
             """update media_assets
