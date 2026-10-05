@@ -266,6 +266,30 @@ async def test_profile_import_confirmation_is_atomic_tenant_scoped_and_coalesced
     assert ready is not None and ready.ready and ready.created
     assert (await repo.get_job(ready.id))['status'] == 'completed'
 
+    # Separate previews resolving to the same stable account must share one
+    # active import as well; locking only the validation job would race here.
+    second_validation = await database.pool.fetchval(
+        """insert into jobs(user_id,telegram_chat_id,job_type,status,progress,result,input,source_channel)
+           values($1,1,'validate_profile_import','completed',100,$2,$3,'mini_app') returning id""",
+        owner,
+        {"platform": "tiktok", "target": "https://www.tiktok.com/@renamed", "platform_account_id": "second-stable"},
+        {"platform": "tiktok", "target": "https://www.tiktok.com/@renamed"},
+    )
+    third_validation = await database.pool.fetchval(
+        """insert into jobs(user_id,telegram_chat_id,job_type,status,progress,result,input,source_channel)
+           values($1,1,'validate_profile_import','completed',100,$2,$3,'mini_app') returning id""",
+        owner,
+        {"platform": "tiktok", "target": "https://www.tiktok.com/@creator", "platform_account_id": "second-stable"},
+        {"platform": "tiktok", "target": "https://www.tiktok.com/@creator"},
+    )
+    parallel = await asyncio.gather(
+        repo.create_owned_profile_import_job(owner, 1, second_validation, queue_name=queue.queue_name),
+        repo.create_owned_profile_import_job(owner, 1, third_validation, queue_name=queue.queue_name),
+    )
+    assert parallel[0] is not None and parallel[1] is not None
+    assert parallel[0].id == parallel[1].id
+    assert sorted((parallel[0].created, parallel[1].created)) == [False, True]
+
 
 async def test_profile_media_playback_and_acquisition_are_tenant_scoped(database):
     """A foreign profile/post must be indistinguishable from absent repository data."""

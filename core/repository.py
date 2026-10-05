@@ -181,14 +181,13 @@ class Repository:
     async def create_owned_profile_import_job(self, user_id, chat_id, validation_job_id, *, queue_name):
         """Confirm one owned validation and atomically queue its bounded import.
 
-        The lock is keyed to the validation job, so double confirmation taps can
-        never create multiple logical imports.  All account identity and target
-        values come from the private validation result, never the browser.
+        The lock is keyed to the tenant's stable account identity, so double
+        taps *and separate previews of the same account* cannot create multiple
+        logical imports. All account identity and target values come from the
+        private validation result, never the browser.
         """
-        lock_key = f"profile-import-confirm:{user_id}:{validation_job_id}"
         async with self.pool.acquire() as con:
             async with con.transaction():
-                await con.execute("select pg_advisory_xact_lock(hashtextextended($1, 0))", lock_key)
                 validation = await con.fetchrow(
                     """select id, result from jobs
                        where id=$1 and user_id=$2 and job_type='validate_profile_import'
@@ -202,6 +201,10 @@ class Repository:
                 account_id = result.get("platform_account_id")
                 if result.get("platform") != "tiktok" or not isinstance(target, str) or not isinstance(account_id, str):
                     return None
+                await con.execute(
+                    "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+                    f"profile-import-confirm:{user_id}:tiktok:{account_id}",
+                )
 
                 prior = await con.fetchrow(
                     """select id, status, result from jobs
@@ -212,6 +215,18 @@ class Repository:
                 )
                 if prior is not None:
                     return ProfileImportJob(prior["id"], False, prior["status"] == "completed")
+
+                active = await con.fetchrow(
+                    """select id from jobs
+                       where user_id=$1 and job_type='import_profile'
+                         and status in ('queued','running')
+                         and input->>'platform'='tiktok'
+                         and input->>'expected_platform_account_id'=$2
+                       order by created_at limit 1 for update""",
+                    user_id, account_id,
+                )
+                if active is not None:
+                    return ProfileImportJob(active["id"], False)
 
                 existing_profile = await con.fetchrow(
                     """select id, platform, username, display_name, avatar_url
