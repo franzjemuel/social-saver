@@ -41,6 +41,8 @@ Updated for v3.8.
 - Browser post lists expose only `has_archived_media`; playback mints a
   tenant-authorized short-lived URL without exposing provider URLs, storage keys,
   object IDs, or hashes. Photo/carousel persistence remains intentionally out of scope.
+- Profile-media job UUID binding is covered by a real disposable-Postgres regression
+  test, including targeted and bulk tenant-owned queue requests.
 
 ## Completed
 Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; private R2 archive; separate bot/API/worker services; server-validated Telegram Mini App auth; tenant-scoped reads; shared save pipeline; idempotency/job status; archive browse/detail/download; entitlements/Stars; Saved Friends/story polling; rate limits/monitoring; session vault; Live reliability/security foundations; Railway staging scaffolding; CI/release gates; executable offline staging readiness report with migration floor 020 and service-specific secret boundaries; tenant-safe asynchronous archive deletion with worker-owned R2 cleanup; full asynchronous account deletion with immediate watch/archive disablement and shared-object-safe R2 purge.

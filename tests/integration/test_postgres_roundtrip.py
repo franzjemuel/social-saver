@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import asyncpg
 import pytest
@@ -106,6 +107,41 @@ async def test_job_tenant_boundary_and_dead_letter(database):
     dead = await dead_queue.claim()
     assert len(dead) == 1 and dead[0]['message']['job_id'] == str(job_id)
     await dead_queue.archive(dead[0]['msg_id'])
+
+
+async def test_profile_media_job_uuid_parameters_use_real_postgres(database):
+    """Regression for UUID parameter inference in the profile-media queue query."""
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id, platform, platform_account_id, username)
+           values($1, 'tiktok', 'profile-account', 'owner') returning id""",
+        owner,
+    )
+    post = await database.pool.fetchval(
+        """insert into archived_posts(archived_profile_id, platform_post_id, original_url, media_type)
+           values($1, 'post-id', 'https://www.tiktok.com/@owner/video/post-id', 'video') returning id""",
+        profile,
+    )
+    await database.pool.execute(
+        """insert into archived_post_media_assets(archived_post_id, position, asset_type, source_url)
+           values($1, 0, 'video', 'https://www.tiktok.com/@owner/video/post-id')""",
+        post,
+    )
+
+    targeted_job = await repo.create_owned_profile_media_job(owner, 1, profile, post)
+    assert targeted_job is not None
+    assert (await repo.get_job(targeted_job))['input'] == {
+        'profile_id': str(profile), 'post_id': str(post),
+    }
+
+    bulk_job = await repo.create_owned_profile_media_job(owner, 1, profile)
+    assert bulk_job is not None
+    assert (await repo.get_job(bulk_job))['input'] == {'profile_id': str(profile)}
+
+    assert await repo.create_owned_profile_media_job(other, 2, profile, post) is None
+    assert await repo.create_owned_profile_media_job(owner, 1, profile, uuid4()) is None
 
 
 async def test_canary_transaction_leaves_no_queue(database, monkeypatch):

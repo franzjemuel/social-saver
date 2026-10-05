@@ -274,13 +274,22 @@ class Repository:
     async def create_owned_profile_media_job(self, user_id, chat_id, profile_id, post_id=None):
         """Queue only an archived profile that belongs to the caller's tenant."""
         return await self.pool.fetchval(
-            """insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel)
-               select $1,$2,'archive_profile_media',jsonb_strip_nulls(jsonb_build_object('profile_id',$3::text,'post_id',$4::text)),'mini_app'
+            """with requested_media as (
+                 select $3::uuid as profile_id, $4::uuid as post_id
+               )
+               insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel)
+               select $1,$2,'archive_profile_media',
+                      jsonb_strip_nulls(jsonb_build_object(
+                        'profile_id', requested_media.profile_id,
+                        'post_id', requested_media.post_id
+                      )),
+                      'mini_app'
+               from requested_media
                where exists(select 1 from archived_profiles profile
-                            where profile.id=$3 and profile.user_id=$1)
-                 and ($4::uuid is null or exists(select 1 from archived_posts post
+                            where profile.id=requested_media.profile_id and profile.user_id=$1)
+                 and (requested_media.post_id is null or exists(select 1 from archived_posts post
                      join archived_post_media_assets asset on asset.archived_post_id=post.id
-                     where post.id=$4 and post.archived_profile_id=$3
+                     where post.id=requested_media.post_id and post.archived_profile_id=requested_media.profile_id
                        and post.media_type='video' and asset.asset_type='video'))
                returning id""",
             user_id, chat_id, profile_id, post_id,
