@@ -47,12 +47,16 @@ Updated for v3.8.
   and playback signing failures return a safe availability error rather than
   storage details. Native acquisition is bounded by yt-dlp's max-file option and
   local post-download validation.
-- Hosted acceptance is not yet complete. Migration 023 is applied and the
-  corrected worker R2 credential passed a bounded write/read/delete probe. The
-  earlier reviewed worker build was deployed; the current queue/playback
-  hardening remains awaiting normal staging deployment. No post-R2-fix real video
-  canary, persisted object, signed playback validation, or real-object idempotency
-  proof has run. The 12 benchmark posts remain metadata-only by design.
+- Single-video hosted acceptance is complete on staging. Migration 023 is applied,
+  the corrected worker R2 credential passed a bounded write/read/delete probe, and
+  the reviewed API/worker build completed the authenticated targeted path:
+  queue, native TikTok acquisition, private R2 persistence, attachment, authorized
+  signed playback, browser-readable video metadata, and a same-post idempotency
+  retry. One of the 12 benchmark posts has persisted archived video; the other 11
+  remain intentionally unprocessed. PR #16 is code merge-ready and its intended
+  single-video operational acceptance is complete. Full-profile batches,
+  photo/carousel persistence, and the separate frontend playback PR remain future
+  work.
 
 ## Completed
 Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; private R2 archive; separate bot/API/worker services; server-validated Telegram Mini App auth; tenant-scoped reads; shared save pipeline; idempotency/job status; archive browse/detail/download; entitlements/Stars; Saved Friends/story polling; rate limits/monitoring; session vault; Live reliability/security foundations; Railway staging scaffolding; CI/release gates; executable offline staging readiness report with migration floor 020 and service-specific secret boundaries; tenant-safe asynchronous archive deletion with worker-owned R2 cleanup; full asynchronous account deletion with immediate watch/archive disablement and shared-object-safe R2 purge.
