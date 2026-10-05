@@ -17,12 +17,13 @@ from pydantic import BaseModel, Field
 
 from core.config import settings
 from core.database import Database
-from core.repository import Repository
+from core.repository import ProfileImportIdempotencyConflict, Repository
 from core.queue import JobQueue
 from core.rate_limits import AbuseLimiter
 from core.entitlements import EntitlementService
 from core.save_requests import normalize_save_url
 from providers.base import UnsupportedUrl
+from providers.tiktok.provider import normalize_tiktok_profile_target
 from core.telegram_webapp_auth import TelegramWebAppAuthError, verify_telegram_init_data
 from core.storage import R2Storage
 
@@ -179,6 +180,63 @@ class ProfileArchivePostListResponse(BaseModel):
     offset: int
 
 
+class TikTokProfileValidationRequest(BaseModel):
+    # Keep parsing deliberately permissive so malformed client values become
+    # our stable application error instead of Pydantic/parser internals.
+    target: object | None = None
+
+
+class TikTokProfilePreview(BaseModel):
+    platform: str
+    username: str
+    display_name: str | None = None
+    avatar_url: str | None = None
+
+
+class ProfileImportValidationCreated(BaseModel):
+    job_id: str
+    phase: str = "validating"
+
+
+class ProfileImportValidationStatus(BaseModel):
+    job_id: str
+    phase: str
+    preview: TikTokProfilePreview | None = None
+    error_code: str | None = None
+
+
+_PROFILE_IMPORT_ERROR_CODES = {
+    "INVALID_TARGET": "invalid_target",
+    "PROFILE_PRIVATE": "profile_private",
+    "PROFILE_NOT_FOUND": "profile_not_found",
+    "PROVIDER_RATE_LIMITED": "provider_rate_limited",
+}
+
+
+def _profile_import_failure_code(value: object) -> str:
+    return _PROFILE_IMPORT_ERROR_CODES.get(str(value or "").upper(), "temporarily_unavailable")
+
+
+def _safe_tiktok_preview(result: object) -> TikTokProfilePreview | None:
+    if not isinstance(result, dict):
+        return None
+    preview = result.get("preview")
+    if not isinstance(preview, dict):
+        return None
+    username = preview.get("username")
+    if not isinstance(username, str) or not username:
+        return None
+    display_name = preview.get("display_name")
+    avatar_url = preview.get("avatar_url")
+    return TikTokProfilePreview(
+        platform="tiktok",
+        username=username,
+        display_name=display_name if isinstance(display_name, str) else None,
+        # This provider-hosted image is an ephemeral preview, not archive media.
+        avatar_url=avatar_url if isinstance(avatar_url, str) else None,
+    )
+
+
 def _profile_archive_summary(row) -> ProfileArchiveSummary:
     data = dict(row)
     data["id"] = str(data["id"])
@@ -252,6 +310,66 @@ async def profile_archive_posts(
         raise HTTPException(status_code=404, detail="profile_archive_not_found")
     return ProfileArchivePostListResponse(
         items=[_profile_archive_post(row) for row in rows], limit=limit, offset=offset,
+    )
+
+
+@app.post(
+    "/v1/profile-imports/tiktok/validations",
+    response_model=ProfileImportValidationCreated,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_tiktok_profile_validation(
+    body: TikTokProfileValidationRequest,
+    identity=Depends(current_identity),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    """Queue worker-owned validation of one public TikTok profile target."""
+    if not idempotency_key or len(idempotency_key) > 128:
+        raise HTTPException(status_code=400, detail="idempotency_key_required")
+    if not isinstance(body.target, str):
+        raise HTTPException(status_code=422, detail="invalid_target")
+    try:
+        _, target = normalize_tiktok_profile_target(body.target)
+    except UnsupportedUrl:
+        raise HTTPException(status_code=422, detail="invalid_target") from None
+    if _repo is None or _queue is None:
+        raise HTTPException(status_code=503, detail="api_not_ready")
+    try:
+        job = await _repo.create_owned_profile_import_validation_job(
+            identity["app_user_id"],
+            identity["telegram_user_id"],
+            target,
+            idempotency_key,
+            queue_name=_queue.queue_name,
+        )
+    except ProfileImportIdempotencyConflict:
+        raise HTTPException(status_code=409, detail="profile_import_idempotency_conflict") from None
+    return ProfileImportValidationCreated(job_id=str(job.id))
+
+
+@app.get("/v1/profile-imports/{job_id}", response_model=ProfileImportValidationStatus)
+async def profile_import_validation_status(job_id: str, identity=Depends(current_identity)):
+    """Project validation state without exposing job input or provider internals."""
+    if _repo is None:
+        raise HTTPException(status_code=503, detail="api_not_ready")
+    try:
+        parsed = UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="profile_import_not_found") from None
+    row = await _repo.get_owned_profile_import_validation(identity["app_user_id"], parsed)
+    if row is None:
+        # Foreign and nonexistent ids deliberately share the same response.
+        raise HTTPException(status_code=404, detail="profile_import_not_found")
+    if row["status"] in {"queued", "running"}:
+        return ProfileImportValidationStatus(job_id=str(row["id"]), phase="validating")
+    if row["status"] == "completed":
+        preview = _safe_tiktok_preview(row["result"])
+        if preview is not None:
+            return ProfileImportValidationStatus(
+                job_id=str(row["id"]), phase="awaiting_confirmation", preview=preview,
+            )
+    return ProfileImportValidationStatus(
+        job_id=str(row["id"]), phase="failed", error_code=_profile_import_failure_code(row["error_code"]),
     )
 
 

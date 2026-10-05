@@ -13,6 +13,8 @@ from apps.worker.processors.archive_delete import process_purge_archive
 from apps.worker.processors.account_delete import process_purge_account
 from apps.worker.processors.stories import process_deliver_story, process_resolve_stories
 from apps.worker.processors.profile_archive_media import process_archive_profile_media
+from apps.worker.processors.profile_import_validation import process_validate_profile_import
+from providers.tiktok.validation import TikTokProfileValidationFailure
 from core.observability import init_observability, capture_job_exception
 from core.rate_limits import provider_concurrency
 from core.readiness import start_readiness_server
@@ -121,6 +123,10 @@ async def main():
                     async with provider_concurrency.for_platform("tiktok"):
                         result = await process_archive_profile_media(job, repo)
                     success_message = None
+                elif job["job_type"] == "validate_profile_import":
+                    async with provider_concurrency.for_platform("tiktok"):
+                        result = await process_validate_profile_import(job)
+                    success_message = None
                 else:
                     raise ValueError(f"Unknown job type: {job['job_type']}")
 
@@ -132,6 +138,11 @@ async def main():
                 code = type(exc).__name__.upper()
                 await repo.fail_job(job_id, code, str(exc))
                 await bot.send_message(job["telegram_chat_id"], f"❌ {str(exc)}")
+                await queue.archive(msg["msg_id"])
+            except TikTokProfileValidationFailure as exc:
+                # Validation errors are rendered through the Mini App status API;
+                # do not expose provider details or send an unrelated bot message.
+                await repo.fail_job(job_id, exc.code.upper(), exc.code)
                 await queue.archive(msg["msg_id"])
             except Exception as exc:
                 capture_job_exception(exc,job)

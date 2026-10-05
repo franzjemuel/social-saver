@@ -14,7 +14,7 @@ import pytest_asyncio
 
 from core.database import Database
 from core.queue import JobQueue
-from core.repository import Repository
+from core.repository import ProfileImportIdempotencyConflict, Repository
 from ops import staging_canary
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -176,6 +176,47 @@ async def test_profile_media_job_coalesces_concurrent_targeted_requests(database
     matching = [message for message in messages if message['message']['job_id'] == str(first.id)]
     assert len(matching) == 1
     await queue.archive(matching[0]['msg_id'])
+
+
+async def test_profile_import_validation_coalesces_tenant_target_and_request_retries(database):
+    """Real Postgres/PGMQ coverage for validation locks and retry-key behavior."""
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    queue = JobQueue(database.pool)
+    target = 'https://www.tiktok.com/@creator'
+
+    first, second = await asyncio.gather(
+        repo.create_owned_profile_import_validation_job(owner, 1, target, 'tap-a', queue_name=queue.queue_name),
+        repo.create_owned_profile_import_validation_job(owner, 1, target, 'tap-b', queue_name=queue.queue_name),
+    )
+    assert first.id == second.id
+    assert sorted((first.created, second.created)) == [False, True]
+    retry = await repo.create_owned_profile_import_validation_job(
+        owner, 1, target, 'tap-a', queue_name=queue.queue_name,
+    )
+    assert retry.id == first.id and retry.created is False
+    with pytest.raises(ProfileImportIdempotencyConflict):
+        await repo.create_owned_profile_import_validation_job(
+            owner, 1, 'https://www.tiktok.com/@different', 'tap-a', queue_name=queue.queue_name,
+        )
+    with pytest.raises(ProfileImportIdempotencyConflict):
+        await repo.create_owned_profile_import_validation_job(
+            owner, 1, 'https://www.tiktok.com/@different', 'tap-b', queue_name=queue.queue_name,
+        )
+    separate_tenant = await repo.create_owned_profile_import_validation_job(
+        other, 2, target, 'tap-a', queue_name=queue.queue_name,
+    )
+    assert separate_tenant.id != first.id and separate_tenant.created is True
+    assert await database.pool.fetchval(
+        "select count(*) from jobs where job_type='validate_profile_import'",
+    ) == 2
+    messages = await queue.claim(10)
+    matching = [message for message in messages if message['message']['job_id'] in {str(first.id), str(separate_tenant.id)}]
+    assert len(matching) == 2
+    for message in matching:
+        await queue.archive(message['msg_id'])
+    assert await repo.get_owned_profile_import_validation(other, first.id) is None
 
 
 async def test_profile_media_playback_and_acquisition_are_tenant_scoped(database):

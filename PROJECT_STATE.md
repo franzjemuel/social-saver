@@ -32,6 +32,17 @@ Updated for v3.8.
 - This is a read-only backend contract for a future frontend; it does not add
   profile import, media download, or hosted acceptance behavior.
 
+## TikTok profile-import validation — 2026-10-05
+
+- Added a Telegram-authenticated, worker-owned TikTok profile validation slice
+  for the future Add Profile flow. It accepts only normalized public profile
+  targets, atomically queues tenant-owned validation work, and safely coalesces
+  duplicate taps and request retries.
+- The browser can poll a tenant-scoped validation status and receive only a
+  safe preview (platform, username, display name, optional preview avatar).
+  Stable account IDs, secUid, raw provider data, and provider failures remain
+  internal. Confirmation/import and frontend UI are intentionally not included.
+
 ## Profile archive media persistence — 2026-10-05
 
 - Profile video assets can be queued only by their owning Telegram-authenticated

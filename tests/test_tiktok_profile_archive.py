@@ -122,6 +122,15 @@ def test_tt_dlp_scanner_normalizes_identity_and_canonical_post_urls_without_cook
     assert client.calls[1][-1] is False
 
 
+def test_tt_dlp_profile_preview_does_not_enumerate_posts():
+    client = FakeScannerClient()
+
+    profile = TikTokProfileScanner(lambda: client).resolve_profile("aliachin11")
+
+    assert profile.username == "aliachin11"
+    assert client.calls == [("creator", "aliachin11")]
+
+
 def test_default_scanner_configuration_never_loads_cookies_or_authentication():
     source = inspect.getsource(TikTokProfileScanner._default_client)
 
