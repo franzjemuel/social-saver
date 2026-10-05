@@ -12,6 +12,7 @@ from apps.worker.processors.live_finalize import process_finalize_live
 from apps.worker.processors.archive_delete import process_purge_archive
 from apps.worker.processors.account_delete import process_purge_account
 from apps.worker.processors.stories import process_deliver_story, process_resolve_stories
+from apps.worker.processors.profile_archive_media import process_archive_profile_media
 from core.observability import init_observability, capture_job_exception
 from core.rate_limits import provider_concurrency
 from core.readiness import start_readiness_server
@@ -115,6 +116,10 @@ async def main():
                     success_message = None
                 elif job["job_type"] == "purge_account":
                     result = await process_purge_account(job, repo)
+                    success_message = None
+                elif job["job_type"] == "archive_profile_media":
+                    async with provider_concurrency.for_platform("tiktok"):
+                        result = await process_archive_profile_media(job, repo)
                     success_message = None
                 else:
                     raise ValueError(f"Unknown job type: {job['job_type']}")
