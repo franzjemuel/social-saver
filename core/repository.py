@@ -9,6 +9,18 @@ class ProfileMediaJob:
     created: bool
 
 
+@dataclass(frozen=True)
+class ProfileImportValidationJob:
+    """An owned validation job plus whether this request enqueued new work."""
+
+    id: object
+    created: bool
+
+
+class ProfileImportIdempotencyConflict(ValueError):
+    """One client retry key cannot be reused for a different profile target."""
+
+
 class Repository:
     def __init__(self, pool):
         self.pool = pool
@@ -48,6 +60,69 @@ class Repository:
             user_id, chat_id, job_type, input_data or {}, source_channel
         )
 
+    async def create_owned_profile_import_validation_job(
+        self, user_id, chat_id, target, client_request_id, *, queue_name,
+    ):
+        """Atomically enqueue one active, tenant-owned TikTok validation job.
+
+        The request id protects network retries; the advisory lock/active-target
+        lookup protects duplicate UI taps without revealing other tenants.
+        """
+        lock_key = f"profile-import-validation:{user_id}:{target}"
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                await con.execute("select pg_advisory_xact_lock(hashtextextended($1, 0))", lock_key)
+                prior = await con.fetchrow(
+                    """select id, job_type, input->>'target' as target
+                       from jobs where user_id=$1
+                         and (client_request_id=$2 or coalesce(input->'idempotency_keys', '[]'::jsonb) ? $2)
+                       for update""",
+                    user_id, client_request_id,
+                )
+                if prior is not None:
+                    if prior["job_type"] != "validate_profile_import" or prior["target"] != target:
+                        raise ProfileImportIdempotencyConflict("idempotency key target conflict")
+                    return ProfileImportValidationJob(prior["id"], False)
+
+                active = await con.fetchrow(
+                    """select id from jobs
+                       where user_id=$1 and job_type='validate_profile_import'
+                         and status in ('queued','running')
+                         and input->>'platform'='tiktok' and input->>'target'=$2
+                       order by created_at limit 1""",
+                    user_id, target,
+                )
+                if active is not None:
+                    # Keep every coalesced request key durable. The existing
+                    # unique client_request_id remains the primary retry
+                    # mechanism; this private array preserves collision checks
+                    # for duplicate taps that joined an already-active job.
+                    await con.execute(
+                        """update jobs set input=jsonb_set(
+                               input, '{idempotency_keys}',
+                               coalesce(input->'idempotency_keys', '[]'::jsonb) || to_jsonb($2::text)
+                             ) where id=$1""",
+                        active["id"], client_request_id,
+                    )
+                    return ProfileImportValidationJob(active["id"], False)
+
+                created = await con.fetchrow(
+                    """insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel,client_request_id)
+                       values($1,$2,'validate_profile_import',
+                              jsonb_build_object('platform','tiktok','target',$3::text,
+                                                 'idempotency_keys',jsonb_build_array($4::text)),
+                              'mini_app',$4)
+                       returning id""",
+                    user_id, chat_id, target, client_request_id,
+                )
+                # The PGMQ message shares the transaction with its job row. A
+                # queue error rolls back instead of stranding an active job.
+                await con.fetchval(
+                    "select * from pgmq.send($1, jsonb_build_object('version',1,'job_id',$2::text), 0)",
+                    queue_name, str(created["id"]),
+                )
+                return ProfileImportValidationJob(created["id"], True)
+
     async def get_job(self, job_id):
         return await self.pool.fetchrow("select * from jobs where id=$1", job_id)
 
@@ -75,6 +150,15 @@ class Repository:
         await self.pool.execute(
             """update jobs set status='failed',error_code=$2,error_message=$3,completed_at=now()
             where id=$1 and status <> 'completed'""", job_id, code, message[:1000]
+        )
+
+    async def get_owned_profile_import_validation(self, user_id, job_id):
+        """Return internal validation state only after an ownership/type check."""
+        return await self.pool.fetchrow(
+            """select id, status, result, error_code
+               from jobs
+               where id=$1 and user_id=$2 and job_type='validate_profile_import'""",
+            job_id, user_id,
         )
 
     async def upsert_resolved_media(self, media):

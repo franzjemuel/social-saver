@@ -1,5 +1,6 @@
 import asyncio
 import re
+from urllib.parse import urlparse
 
 from providers.base import ArchivedPost, ArchivedProfile, ProfileArchiveProvider, SourceUnavailable, UnsupportedUrl
 from providers.tiktok.metadata import TikTokPostMetadataResolver
@@ -12,14 +13,31 @@ DEVELOPMENT_MAX_POSTS = 12
 
 
 def normalize_tiktok_profile_target(target: str) -> tuple[str, str]:
-    value = target.strip().rstrip("/")
+    if not isinstance(target, str):
+        raise UnsupportedUrl("Invalid TikTok profile target")
+    value = target.strip()
+    if not value:
+        raise UnsupportedUrl("Invalid TikTok profile target")
     if value.startswith("@"):
         username = value[1:]
+    elif "://" not in value:
+        username = value
     else:
-        match = re.fullmatch(r"https?://(?:www\.)?tiktok\.com/@([A-Za-z0-9._]{1,30})(?:\?.*)?", value)
-        if not match:
-            raise UnsupportedUrl("Send a TikTok username such as @creator or a TikTok profile URL")
-        username = match.group(1)
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"}:
+            raise UnsupportedUrl("Invalid TikTok profile target")
+        try:
+            port = parsed.port
+        except ValueError:
+            raise UnsupportedUrl("Invalid TikTok profile target") from None
+        if parsed.username or parsed.password or port is not None:
+            raise UnsupportedUrl("Invalid TikTok profile target")
+        if (parsed.hostname or "").lower() not in {"tiktok.com", "www.tiktok.com", "m.tiktok.com"}:
+            raise UnsupportedUrl("Invalid TikTok profile target")
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) != 1 or not parts[0].startswith("@"):
+            raise UnsupportedUrl("Invalid TikTok profile target")
+        username = parts[0][1:]
     if not USERNAME.fullmatch(username):
         raise UnsupportedUrl("Invalid TikTok username")
     return username, f"https://www.tiktok.com/@{username}"
