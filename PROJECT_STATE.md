@@ -21,6 +21,17 @@ Updated for v3.8.
   authentication, or media downloads: tt-dlp resolved the expected numeric
   account ID and secUid, selected 12 posts, and yt-dlp enriched all 12.
 
+## Profile archive read API — 2026-10-05
+
+- Added Telegram-authenticated, tenant-scoped read routes for profile archive
+  summaries, owned profile detail, and newest-first post lists with each post's
+  latest engagement snapshot.
+- Browser responses intentionally exclude profile/provider metadata, TikTok
+  secUid, acquisition URLs, storage keys, and sessions. Foreign and missing
+  profile IDs share the same 404 response.
+- This is a read-only backend contract for a future frontend; it does not add
+  profile import, media download, or hosted acceptance behavior.
+
 ## Completed
 Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; private R2 archive; separate bot/API/worker services; server-validated Telegram Mini App auth; tenant-scoped reads; shared save pipeline; idempotency/job status; archive browse/detail/download; entitlements/Stars; Saved Friends/story polling; rate limits/monitoring; session vault; Live reliability/security foundations; Railway staging scaffolding; CI/release gates; executable offline staging readiness report with migration floor 020 and service-specific secret boundaries; tenant-safe asynchronous archive deletion with worker-owned R2 cleanup; full asynchronous account deletion with immediate watch/archive disablement and shared-object-safe R2 purge.
 
@@ -51,7 +62,7 @@ Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; priv
 Real Instagram extraction/session behavior is not yet proven on staging. Live still needs network-level egress restrictions. Public beta needs finalized privacy/terms and explicit backup/log/payment retention periods. Pricing needs real traffic cost measurements.
 
 ## Next action
-Use the persistent GitHub repository as source of truth, run `python scripts/staging-readiness.py`, then execute the hosted staging launch gate in `docs/staging-launch-v33.md`. Do not implement Facebook extraction until it passes. The next profile-archive increment should add a tenant-authenticated import job/API and worker-owned media persistence after review of this schema.
+Use the persistent GitHub repository as source of truth, run `python scripts/staging-readiness.py`, then execute the hosted staging launch gate in `docs/staging-launch-v33.md`. Do not implement Facebook extraction until it passes. The next profile-archive increment should let a frontend consume the authenticated read contract, before adding a tenant-authenticated import job/API and worker-owned media persistence.
 
 - v3.6 closed a Telegram-bot archive deletion regression: bot and Mini App now both queue worker-only physical R2 cleanup.
 

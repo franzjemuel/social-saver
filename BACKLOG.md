@@ -17,6 +17,7 @@
 ## P1 private beta
 - [ ] Mini App job progress UI.
 - [ ] Archive UI and Saved Friends management UI.
+- [x] Add tenant-scoped profile archive read API for future private frontend rendering.
 - [x] Archive deletion and physical cleanup boundary.
 - [x] Full account deletion pipeline.
 - [ ] Finalize backup/log/payment retention periods and deletion UX copy.

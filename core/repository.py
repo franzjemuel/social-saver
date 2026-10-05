@@ -192,6 +192,76 @@ class Repository:
             user_id, archived_profile_id, platform_post_id,
         )
 
+    async def list_owned_archived_profiles(self, user_id, *, limit=25, offset=0):
+        """Safe tenant-scoped profile archive summaries for the browser API."""
+        return await self.pool.fetch(
+            """select profile.id, profile.platform, profile.platform_account_id,
+                      profile.username, profile.display_name, profile.bio, profile.avatar_url,
+                      profile.first_archived_at, profile.last_observed_at,
+                      count(post.id)::int as post_count,
+                      count(post.id) filter (where post.is_present_on_original)::int as present_post_count,
+                      count(post.id) filter (where not post.is_present_on_original)::int as removed_post_count,
+                      max(post.published_at) as latest_post_at
+               from archived_profiles profile
+               left join archived_posts post on post.archived_profile_id=profile.id
+               where profile.user_id=$1
+               group by profile.id
+               order by profile.last_observed_at desc, profile.id desc
+               limit $2 offset $3""",
+            user_id, limit, offset,
+        )
+
+    async def get_owned_archived_profile(self, user_id, profile_id):
+        """Return a safe profile summary only when it belongs to this tenant."""
+        return await self.pool.fetchrow(
+            """select profile.id, profile.platform, profile.platform_account_id,
+                      profile.username, profile.display_name, profile.bio, profile.avatar_url,
+                      profile.first_archived_at, profile.last_observed_at,
+                      count(post.id)::int as post_count,
+                      count(post.id) filter (where post.is_present_on_original)::int as present_post_count,
+                      count(post.id) filter (where not post.is_present_on_original)::int as removed_post_count,
+                      max(post.published_at) as latest_post_at
+               from archived_profiles profile
+               left join archived_posts post on post.archived_profile_id=profile.id
+               where profile.user_id=$1 and profile.id=$2
+               group by profile.id""",
+            user_id, profile_id,
+        )
+
+    async def list_owned_archived_profile_posts(self, user_id, profile_id, *, limit=30, offset=0):
+        """List a tenant-owned profile's posts with only the latest engagement snapshot.
+
+        ``None`` means the profile is missing or belongs to another tenant; an
+        empty list means an owned profile currently has no posts.
+        """
+        owned = await self.pool.fetchval(
+            "select id from archived_profiles where id=$1 and user_id=$2",
+            profile_id, user_id,
+        )
+        if owned is None:
+            return None
+        return await self.pool.fetch(
+            """select post.id, post.platform_post_id, post.original_url, post.media_type,
+                      post.caption, post.published_at, post.thumbnail_url,
+                      post.is_present_on_original, post.first_archived_at, post.last_observed_at,
+                      engagement.observed_at as engagement_observed_at,
+                      engagement.view_count, engagement.like_count, engagement.comment_count,
+                      engagement.repost_count, engagement.share_count, engagement.save_count
+               from archived_posts post
+               left join lateral (
+                 select observed_at, view_count, like_count, comment_count,
+                        repost_count, share_count, save_count
+                 from archived_post_engagement_snapshots
+                 where archived_post_id=post.id
+                 order by observed_at desc, id desc
+                 limit 1
+               ) engagement on true
+               where post.archived_profile_id=$1
+               order by post.published_at desc nulls last, post.first_archived_at desc, post.id desc
+               limit $2 offset $3""",
+            profile_id, limit, offset,
+        )
+
     async def update_asset_storage(self, media_item_id, position, *, size_bytes, sha256, storage_provider=None, storage_key=None):
         await self.pool.execute(
             """update media_assets
