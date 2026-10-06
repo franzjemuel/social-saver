@@ -598,7 +598,8 @@ class Repository:
     async def get_owned_archived_post_playback(self, user_id, profile_id, post_id):
         """Return storage key only after an owned profile/post relationship is proven."""
         return await self.pool.fetchrow(
-            """select post.media_type, object.storage_key
+            """select profile.platform, post.platform_post_id, post.media_type,
+                      object.storage_key, object.content_type
                from archived_posts post
                join archived_profiles profile on profile.id=post.archived_profile_id
                left join archived_post_media_assets asset on asset.archived_post_id=post.id

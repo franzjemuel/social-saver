@@ -338,10 +338,15 @@ async def test_profile_media_playback_and_acquisition_are_tenant_scoped(database
         """insert into archived_post_media_assets(archived_post_id,position,asset_type,stored_object_id)
            values($1,0,'video',$2)""", post, object_id,
     )
-    assert (await repo.get_owned_archived_post_playback(owner, profile, post))['media_type'] == 'video'
+    owned_playback = await repo.get_owned_archived_post_playback(owner, profile, post)
+    assert owned_playback['media_type'] == 'video'
+    assert owned_playback['storage_key'] == 'private-object'
     assert await repo.get_owned_archived_post_playback(other, profile, post) is None
     assert await repo.list_owned_archived_video_assets(other, profile, post) == []
     assert await repo.create_owned_profile_media_job(other, 2, profile, post) is None
+    await database.pool.execute('update stored_objects set deleted_at=now() where id=$1', object_id)
+    deleted_playback = await repo.get_owned_archived_post_playback(owner, profile, post)
+    assert deleted_playback is not None and deleted_playback['storage_key'] is None
 
 
 async def test_canary_transaction_leaves_no_queue(database, monkeypatch):

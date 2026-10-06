@@ -45,3 +45,25 @@ class R2Storage:
             Params={"Bucket": self.bucket, "Key": key},
             ExpiresIn=expires_in or self.presign_seconds,
         )
+
+    async def presigned_download(
+        self,
+        key: str,
+        filename: str,
+        content_type: str | None = None,
+        expires_in: int | None = None,
+    ) -> str:
+        """Mint a one-object attachment URL without changing stored metadata."""
+        params = {
+            "Bucket": self.bucket,
+            "Key": key,
+            "ResponseContentDisposition": f'attachment; filename="{filename}"',
+        }
+        if content_type:
+            params["ResponseContentType"] = content_type
+        return await asyncio.to_thread(
+            self.client.generate_presigned_url,
+            "get_object",
+            Params=params,
+            ExpiresIn=expires_in or self.presign_seconds,
+        )
