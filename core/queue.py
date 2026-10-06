@@ -27,7 +27,10 @@ class JobQueue:
     async def extend_visibility(self, msg_id: int, seconds: int):
         async with self.pool.acquire() as con:
             return await con.fetchrow(
-                "select * from pgmq.set_vt($1,$2,$3)", self.queue_name, msg_id, seconds
+                "select * from pgmq.set_vt($1::text,$2::bigint,$3::integer)",
+                self.queue_name,
+                msg_id,
+                seconds,
             )
 
     async def send_dead_letter(self, payload: dict):
