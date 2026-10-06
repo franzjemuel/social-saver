@@ -9,8 +9,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 import re
 import time
+from urllib.parse import urlsplit
 from uuid import UUID
 
+from aiogram import Bot
+from aiogram.types import InlineQueryResultVideo
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
@@ -34,6 +37,7 @@ _queue: JobQueue | None = None
 _entitlements: EntitlementService | None = None
 _abuse: AbuseLimiter | None = None
 _r2: R2Storage | None = None
+_share_bot: Bot | None = None
 
 
 def _extract_init_data(authorization: str | None, x_telegram_init_data: str | None) -> str:
@@ -69,7 +73,7 @@ async def current_identity(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _db, _repo, _queue, _entitlements, _abuse, _r2
+    global _db, _repo, _queue, _entitlements, _abuse, _r2, _share_bot
     _db = Database(settings.database_url)
     await _db.connect()
     _repo = Repository(_db.pool)
@@ -80,7 +84,13 @@ async def lifespan(app: FastAPI):
     # Use separate credentials from the worker write token in staging/production.
     if all((settings.r2_account_id, settings.r2_access_key_id, settings.r2_secret_access_key, settings.r2_bucket)):
         _r2 = R2Storage(settings.r2_account_id, settings.r2_access_key_id, settings.r2_secret_access_key, settings.r2_bucket, settings.archive_presign_seconds)
+    # The API already holds the bot token to verify Mini App identities. Keep one
+    # reusable client for prepared-message requests instead of opening a session
+    # for every share.
+    _share_bot = Bot(settings.telegram_bot_token)
     yield
+    await _share_bot.session.close()
+    _share_bot = None
     await _db.close()
     _repo = None
     _queue = None
@@ -459,11 +469,29 @@ class ProfileArchiveDownloadResponse(BaseModel):
     expires_in: int | None = None
 
 
+class ProfileArchiveShareResponse(BaseModel):
+    available: bool
+    prepared_message_id: str | None = None
+    expires_at: int | None = None
+
+
 def _profile_video_download_filename(platform: str, platform_post_id: str) -> str:
     """Build a conservative attachment filename from server-owned identifiers."""
     safe_platform = re.sub(r"[^A-Za-z0-9_-]", "", platform)[:24] or "video"
     safe_post_id = re.sub(r"[^A-Za-z0-9_-]", "", platform_post_id)[:80] or "video"
     return f"social-saver-{safe_platform}-{safe_post_id}.mp4"
+
+
+def _is_telegram_jpeg_thumbnail(value: object) -> bool:
+    """Accept only a provider-owned HTTPS JPEG URL for Telegram's thumbnail."""
+    if not isinstance(value, str):
+        return False
+    parsed = urlsplit(value)
+    return (
+        parsed.scheme == "https"
+        and bool(parsed.netloc)
+        and parsed.path.lower().endswith((".jpg", ".jpeg"))
+    )
 
 
 @app.post("/v1/profile-archives/{profile_id}/archive-media", response_model=ProfileArchiveMediaJobResponse,
@@ -553,6 +581,60 @@ async def profile_archive_download(profile_id: str, post_id: str, identity=Depen
         raise HTTPException(status_code=503, detail="archive_download_unavailable") from None
     return ProfileArchiveDownloadResponse(
         available=True, download_url=url, expires_in=settings.archive_presign_seconds,
+    )
+
+
+@app.post("/v1/profile-archives/{profile_id}/posts/{post_id}/share",
+          response_model=ProfileArchiveShareResponse)
+async def profile_archive_share(profile_id: str, post_id: str, identity=Depends(current_identity)):
+    """Prepare an owned archived video for Telegram's native share picker."""
+    if _repo is None or _r2 is None or _share_bot is None:
+        raise HTTPException(status_code=503, detail="archive_share_unavailable")
+    try:
+        profile = UUID(profile_id)
+        post = UUID(post_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="profile_archive_not_found") from None
+    row = await _repo.get_owned_archived_post_playback(identity["app_user_id"], profile, post)
+    if row is None:
+        # Foreign and nonexistent resources deliberately share this response.
+        raise HTTPException(status_code=404, detail="profile_archive_not_found")
+    content_type = row["content_type"]
+    if (
+        row["media_type"] != "video"
+        or row["storage_key"] is None
+        or not isinstance(content_type, str)
+        or content_type.lower().split(";", 1)[0].strip() != "video/mp4"
+        or not _is_telegram_jpeg_thumbnail(row["thumbnail_url"])
+    ):
+        # A missing archive object or compliant thumbnail must not trigger either
+        # provider work or a Telegram request.
+        return ProfileArchiveShareResponse(available=False)
+    try:
+        video_url = await _r2.presigned_get(row["storage_key"], settings.archive_presign_seconds)
+        prepared = await _share_bot.save_prepared_inline_message(
+            identity["telegram_user_id"],
+            InlineQueryResultVideo(
+                id="archived-video",
+                video_url=video_url,
+                mime_type="video/mp4",
+                thumbnail_url=row["thumbnail_url"],
+                title="Archived TikTok video",
+            ),
+            allow_user_chats=True,
+            allow_bot_chats=False,
+            allow_group_chats=True,
+            allow_channel_chats=True,
+        )
+    except Exception:
+        # Neither R2's presign nor Telegram's raw failure details are browser-safe.
+        raise HTTPException(status_code=503, detail="archive_share_temporarily_unavailable") from None
+    expiry = prepared.expiration_date
+    expires_at = int(expiry.timestamp()) if isinstance(expiry, datetime) else int(expiry)
+    return ProfileArchiveShareResponse(
+        available=True,
+        prepared_message_id=prepared.id,
+        expires_at=expires_at,
     )
 
 

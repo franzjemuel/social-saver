@@ -37,10 +37,12 @@
 - [x] Complete the one-video TikTok profile-media persistence/playback/idempotency acceptance using `docs/profile-archive-media-canary.md`; one of 12 benchmark posts now has private persisted video and the other 11 remain intentionally unprocessed.
 - [x] Reuse the bounded profile-media worker path to back up all eligible imported TikTok videos while skipping already persisted assets; photo/carousel persistence remains unsupported.
 - [x] Add tenant-authorized attachment download links for already archived profile videos; frontend Save control remains pending.
+- [x] Add tenant-authorized Telegram prepared-message creation for an already archived TikTok MP4; frontend native-share control and hosted Telegram acceptance remain pending.
 - [x] Add tenant-authenticated TikTok profile-target validation jobs and safe status previews for the future Add Profile flow.
 - [x] Add profile-import confirmation and bounded worker-owned TikTok metadata import after validation; do not imply full media persistence.
 - [ ] Build Add Profile UI (input, preview/confirm, and progress) in the frontend; existing archive browse/detail and playback remain separate.
 - [ ] Add frontend video-backup/progress controls and later bounded resumable larger-history batches. See `docs/profile-archive-media-next-steps.md` for photo/carousel, rescan/removal, and historical-engagement design.
+- [ ] Add a Mini App control that calls the prepared-message endpoint and then Telegram's native `shareMessage`, followed by one bounded hosted sharing acceptance.
 - [ ] Facebook provider adapter after Instagram launch gate.
 - [ ] Facebook Stories through existing watch/archive contracts.
 
