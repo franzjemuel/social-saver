@@ -64,6 +64,7 @@ async def test_owned_archived_video_creates_a_server_only_prepared_message(monke
     monkeypatch.setattr(api, "_repo", repo)
     monkeypatch.setattr(api, "_r2", storage)
     monkeypatch.setattr(api, "_share_bot", bot)
+    monkeypatch.setattr(api.time, "time", lambda: 1_000)
 
     response = await api.profile_archive_share(
         str(PROFILE), str(POST), identity={"app_user_id": "tenant", "telegram_user_id": 99},
@@ -72,7 +73,7 @@ async def test_owned_archived_video_creates_a_server_only_prepared_message(monke
     assert response.model_dump() == {
         "available": True,
         "prepared_message_id": "prepared-message-id",
-        "expires_at": 1893456000,
+        "expires_at": 1_000 + api.settings.archive_presign_seconds,
     }
     assert repo.calls == [("tenant", PROFILE, POST)]
     assert storage.calls == [("private/object", api.settings.archive_presign_seconds)]
@@ -94,6 +95,28 @@ async def test_owned_archived_video_creates_a_server_only_prepared_message(monke
 
 
 @pytest.mark.asyncio
+async def test_share_expiry_never_exceeds_either_telegram_or_r2_capability(monkeypatch):
+    class SoonExpiringBot(PreparedMessageBot):
+        async def save_prepared_inline_message(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return SimpleNamespace(
+                id="prepared-message-id",
+                expiration_date=datetime.fromtimestamp(1_100, tz=timezone.utc),
+            )
+
+    monkeypatch.setattr(api, "_repo", OwnedRepo(archived_video_row()))
+    monkeypatch.setattr(api, "_r2", SigningStorage())
+    monkeypatch.setattr(api, "_share_bot", SoonExpiringBot())
+    monkeypatch.setattr(api.time, "time", lambda: 1_000)
+
+    response = await api.profile_archive_share(
+        str(PROFILE), str(POST), identity={"app_user_id": "tenant", "telegram_user_id": 99},
+    )
+
+    assert response.expires_at == 1_100
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("row", [
     archived_video_row(storage_key=None),
     archived_video_row(media_type="photo"),
@@ -101,6 +124,7 @@ async def test_owned_archived_video_creates_a_server_only_prepared_message(monke
     archived_video_row(thumbnail_url=None),
     archived_video_row(thumbnail_url="http://thumbnail.invalid/poster.jpg"),
     archived_video_row(thumbnail_url="https://thumbnail.invalid/poster.png"),
+    archived_video_row(thumbnail_url="https://thumbnail.invalid/poster.webp"),
 ])
 async def test_unarchived_or_noncompliant_video_does_not_contact_storage_or_telegram(monkeypatch, row):
     storage = SigningStorage()
@@ -172,7 +196,7 @@ async def test_share_failures_are_sanitized(monkeypatch, broken):
 @pytest.mark.parametrize("thumbnail", [
     "https://thumbnail.invalid/poster.jpg",
     "https://thumbnail.invalid/poster.JPEG?version=1",
+    "https://thumbnail.invalid/opaque-thumbnail?format=jpeg",
 ])
-def test_telegram_thumbnail_must_be_https_jpeg(thumbnail):
-    assert api._is_telegram_jpeg_thumbnail(thumbnail)
-
+def test_telegram_thumbnail_candidate_accepts_https_jpeg_urls_without_filename_suffix(thumbnail):
+    assert api._is_telegram_thumbnail_candidate(thumbnail)

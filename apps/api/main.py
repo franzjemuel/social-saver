@@ -482,15 +482,21 @@ def _profile_video_download_filename(platform: str, platform_post_id: str) -> st
     return f"social-saver-{safe_platform}-{safe_post_id}.mp4"
 
 
-def _is_telegram_jpeg_thumbnail(value: object) -> bool:
-    """Accept only a provider-owned HTTPS JPEG URL for Telegram's thumbnail."""
+def _is_telegram_thumbnail_candidate(value: object) -> bool:
+    """Accept HTTPS thumbnail URLs unless their path declares a non-JPEG format.
+
+    TikTok/yt-dlp can return opaque thumbnail paths with no filename extension,
+    so requiring ``.jpg`` would reject valid JPEG resources. The archive schema
+    does not retain a thumbnail MIME type; retain the safe unavailable fallback
+    for known incompatible extensions and let Telegram validate opaque URLs.
+    """
     if not isinstance(value, str):
         return False
     parsed = urlsplit(value)
     return (
         parsed.scheme == "https"
         and bool(parsed.netloc)
-        and parsed.path.lower().endswith((".jpg", ".jpeg"))
+        and not parsed.path.lower().endswith((".webp", ".png", ".gif", ".avif"))
     )
 
 
@@ -605,12 +611,16 @@ async def profile_archive_share(profile_id: str, post_id: str, identity=Depends(
         or row["storage_key"] is None
         or not isinstance(content_type, str)
         or content_type.lower().split(";", 1)[0].strip() != "video/mp4"
-        or not _is_telegram_jpeg_thumbnail(row["thumbnail_url"])
+        or not _is_telegram_thumbnail_candidate(row["thumbnail_url"])
     ):
         # A missing archive object or compliant thumbnail must not trigger either
         # provider work or a Telegram request.
         return ProfileArchiveShareResponse(available=False)
     try:
+        # The browser must not keep using the opaque prepared-message ID after
+        # the one-object R2 presign has expired, even if Telegram assigns a
+        # longer prepared-message expiry.
+        presign_expires_at = int(time.time()) + settings.archive_presign_seconds
         video_url = await _r2.presigned_get(row["storage_key"], settings.archive_presign_seconds)
         prepared = await _share_bot.save_prepared_inline_message(
             identity["telegram_user_id"],
@@ -630,7 +640,8 @@ async def profile_archive_share(profile_id: str, post_id: str, identity=Depends(
         # Neither R2's presign nor Telegram's raw failure details are browser-safe.
         raise HTTPException(status_code=503, detail="archive_share_temporarily_unavailable") from None
     expiry = prepared.expiration_date
-    expires_at = int(expiry.timestamp()) if isinstance(expiry, datetime) else int(expiry)
+    prepared_expires_at = int(expiry.timestamp()) if isinstance(expiry, datetime) else int(expiry)
+    expires_at = min(prepared_expires_at, presign_expires_at)
     return ProfileArchiveShareResponse(
         available=True,
         prepared_message_id=prepared.id,

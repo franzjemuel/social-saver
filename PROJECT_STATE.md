@@ -111,9 +111,15 @@ Updated for v3.8.
   provider. Missing archived media, non-video posts, or unsuitable thumbnails
   return unavailable without contacting Telegram.
 - Telegram requires an HTTPS JPEG thumbnail for `InlineQueryResultVideo`; this
-  first slice uses only the existing server-stored post thumbnail when it meets
-  that contract. It does not add thumbnail generation, frontend controls, or
-  hosted Telegram sharing acceptance.
+  first slice uses only the existing server-stored provider thumbnail. TikTok
+  metadata does not retain a thumbnail MIME type and that URL can independently
+  expire, so explicitly non-JPEG formats return unavailable while opaque HTTPS
+  URLs rely on Telegram validation. It does not add thumbnail persistence or
+  generation, frontend controls, or hosted Telegram sharing acceptance.
+- The returned share expiry is capped to the short-lived R2 presign even if
+  Telegram returns a later prepared-message expiry. A future client must create
+  a fresh prepared message after that time; Telegram media caching is not
+  assumed.
 
 ## Completed
 Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; private R2 archive; separate bot/API/worker services; server-validated Telegram Mini App auth; tenant-scoped reads; shared save pipeline; idempotency/job status; archive browse/detail/download; entitlements/Stars; Saved Friends/story polling; rate limits/monitoring; session vault; Live reliability/security foundations; Railway staging scaffolding; CI/release gates; executable offline staging readiness report with migration floor 020 and service-specific secret boundaries; tenant-safe asynchronous archive deletion with worker-owned R2 cleanup; full asynchronous account deletion with immediate watch/archive disablement and shared-object-safe R2 purge.
