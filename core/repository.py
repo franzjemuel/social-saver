@@ -599,10 +599,11 @@ class Repository:
         """Return storage key only after an owned profile/post relationship is proven."""
         return await self.pool.fetchrow(
             """select profile.platform, post.platform_post_id, post.media_type,
-                      object.storage_key, object.content_type
+                      post.thumbnail_url, object.storage_key, object.content_type
                from archived_posts post
                join archived_profiles profile on profile.id=post.archived_profile_id
                left join archived_post_media_assets asset on asset.archived_post_id=post.id
+                   and asset.asset_type='video'
                left join stored_objects object on object.id=asset.stored_object_id and object.deleted_at is null
                where profile.id=$1 and profile.user_id=$2 and post.id=$3
                order by asset.position nulls last limit 1""",

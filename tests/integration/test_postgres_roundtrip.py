@@ -326,8 +326,9 @@ async def test_profile_media_playback_and_acquisition_are_tenant_scoped(database
            values($1,'tiktok','playback-account','owner') returning id""", owner,
     )
     post = await database.pool.fetchval(
-        """insert into archived_posts(archived_profile_id,platform_post_id,original_url,media_type)
-           values($1,'playback-post','https://www.tiktok.com/@owner/video/playback-post','video') returning id""",
+        """insert into archived_posts(archived_profile_id,platform_post_id,original_url,media_type,thumbnail_url)
+           values($1,'playback-post','https://www.tiktok.com/@owner/video/playback-post','video',
+                  'https://thumbnail.invalid/playback.jpg') returning id""",
         profile,
     )
     object_id = await database.pool.fetchval(
@@ -338,9 +339,18 @@ async def test_profile_media_playback_and_acquisition_are_tenant_scoped(database
         """insert into archived_post_media_assets(archived_post_id,position,asset_type,stored_object_id)
            values($1,0,'video',$2)""", post, object_id,
     )
+    photo_object_id = await database.pool.fetchval(
+        """insert into stored_objects(sha256,storage_key,size_bytes,content_type)
+           values('b' || repeat('0',63),'private-photo-object',1,'image/jpeg') returning id""",
+    )
+    await database.pool.execute(
+        """insert into archived_post_media_assets(archived_post_id,position,asset_type,stored_object_id)
+           values($1,-1,'photo',$2)""", post, photo_object_id,
+    )
     owned_playback = await repo.get_owned_archived_post_playback(owner, profile, post)
     assert owned_playback['media_type'] == 'video'
     assert owned_playback['storage_key'] == 'private-object'
+    assert owned_playback['thumbnail_url'] == 'https://thumbnail.invalid/playback.jpg'
     assert await repo.get_owned_archived_post_playback(other, profile, post) is None
     assert await repo.list_owned_archived_video_assets(other, profile, post) == []
     assert await repo.create_owned_profile_media_job(other, 2, profile, post) is None
