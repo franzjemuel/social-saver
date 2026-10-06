@@ -15,6 +15,7 @@ import pytest_asyncio
 from core.database import Database
 from core.queue import JobQueue
 from core.repository import ProfileImportIdempotencyConflict, Repository
+from providers.base import ArchivedPost
 from ops import staging_canary
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -401,6 +402,102 @@ async def test_profile_sync_jobs_and_presence_reconciliation_are_tenant_safe(dat
     assert await database.pool.fetchval('select deleted_at is null from stored_objects where id=$1', object_id)
     posts = await repo.list_owned_archived_profile_posts(owner, profile)
     assert next(row for row in posts if row['platform_post_id'] == 'removed')['has_archived_media'] is True
+
+
+async def test_full_profile_sync_repository_indexes_109_resumes_and_preserves_media(database):
+    """Full-history primitives must scale past one API page without duplicating or detaching media."""
+    repo = Repository(database.pool)
+    queue = JobQueue(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','full-sync-owner','creator') returning id""",
+        owner,
+    )
+
+    posts = [
+        ArchivedPost(
+            platform_post_id=str(index),
+            original_url=f'https://www.tiktok.com/@creator/video/{index}',
+            media_type='video',
+            assets=[],
+            caption=f'scanner {index}',
+        )
+        for index in range(109)
+    ]
+    inserted = await repo.insert_archived_posts_if_missing(owner, profile, posts)
+    assert len(inserted) == 109
+    assert await repo.insert_archived_posts_if_missing(owner, profile, posts) == set()
+
+    first_page = await repo.list_owned_archived_profile_posts(owner, profile, limit=100, offset=0)
+    second_page = await repo.list_owned_archived_profile_posts(owner, profile, limit=100, offset=100)
+    assert len(first_page) == 100
+    assert len(second_page) == 9
+    assert len({row['platform_post_id'] for row in first_page + second_page}) == 109
+
+    retained_post = await database.pool.fetchval(
+        """select id from archived_posts where archived_profile_id=$1 and platform_post_id='0'""",
+        profile,
+    )
+    object_id = await database.pool.fetchval(
+        """insert into stored_objects(sha256,storage_key,size_bytes,content_type)
+           values('d' || repeat('0',63),'full-sync-retained',742,'video/mp4') returning id""",
+    )
+    await database.pool.execute(
+        """insert into archived_post_media_assets(archived_post_id,position,asset_type,stored_object_id)
+           values($1,0,'video',$2)""",
+        retained_post, object_id,
+    )
+    _, created = await repo.upsert_archived_post(
+        owner,
+        profile,
+        ArchivedPost(
+            platform_post_id='0',
+            original_url='https://www.tiktok.com/@creator/video/0',
+            media_type='video',
+            assets=[],
+            caption='rich metadata',
+        ),
+    )
+    assert created is False
+    playback = await repo.get_owned_archived_post_playback(owner, profile, retained_post)
+    assert playback['storage_key'] == 'full-sync-retained'
+    assert await database.pool.fetchval(
+        'select deleted_at is null from stored_objects where id=$1', object_id,
+    )
+
+    first, second = await asyncio.gather(
+        repo.create_owned_profile_full_sync_job(owner, 1, profile, queue_name=queue.queue_name),
+        repo.create_owned_profile_full_sync_job(owner, 1, profile, queue_name=queue.queue_name),
+    )
+    assert first[0] == second[0]
+    assert sorted((first[1], second[1])) == [False, True]
+    assert await repo.create_owned_profile_full_sync_job(other, 2, profile, queue_name=queue.queue_name) is None
+
+    messages = await queue.claim(10)
+    matching = [message for message in messages if message['message']['job_id'] == str(first[0])]
+    assert len(matching) == 1
+    await queue.archive(matching[0]['msg_id'])
+
+    await repo.start_job(first[0])
+    checkpoint = {
+        'version': 1,
+        'processed_post_ids': [str(index) for index in range(50)],
+        'new_post_ids': [str(index) for index in range(109)],
+        'posts_discovered': 109,
+        'posts_added': 109,
+        'posts_refreshed': 0,
+        'posts_removed': 0,
+        'posts_restored': 0,
+        'posts_enriched': 50,
+        'metadata_failures': 0,
+    }
+    await repo.update_profile_full_sync_checkpoint(first[0], checkpoint, 54)
+    status = await repo.get_owned_profile_full_sync(owner, first[0])
+    assert status['progress'] == 54
+    assert status['checkpoint']['processed_post_ids'] == checkpoint['processed_post_ids']
+    assert await repo.get_owned_profile_full_sync(other, first[0]) is None
 
 
 async def test_canary_transaction_leaves_no_queue(database, monkeypatch):
