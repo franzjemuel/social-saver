@@ -30,6 +30,8 @@ async def process_archive_profile_media(job, repo, downloader=None, media_servic
             try:
                 downloaded = await downloader.download_post(asset["original_url"], root / f"{asset['id']}.mp4")
             except (TerminalProviderError, SourceUnavailable):
+                if post_id:
+                    raise
                 # A concrete post may vanish or become temporarily unavailable.
                 # Keep attachments from other posts; job results expose only the
                 # aggregate count, never provider output or URLs.
@@ -39,6 +41,8 @@ async def process_archive_profile_media(job, repo, downloader=None, media_servic
                 # Provider exceptions can include ephemeral source URLs.  The
                 # worker may report this exception to telemetry, so retain only
                 # the stage/category rather than a chained provider error.
+                if post_id:
+                    raise SourceUnavailable("TikTok media download failed") from None
                 failures += 1
                 continue
             try:
@@ -51,9 +55,13 @@ async def process_archive_profile_media(job, repo, downloader=None, media_servic
                 else:
                     uploaded += 1
             except SourceUnavailable:
+                if post_id:
+                    raise
                 failures += 1
                 continue
             except Exception:
+                if post_id:
+                    raise SourceUnavailable("profile media storage failed") from None
                 failures += 1
                 continue
             if hasattr(repo, "update_job_progress") and total_eligible:

@@ -153,27 +153,31 @@ async def test_single_post_route_and_worker_never_fall_through(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_profile_media_failure_is_partial_and_sanitized():
+async def test_targeted_profile_media_failure_propagates_for_queue_retry():
     class FailingDownloader:
         async def download_post(self, url, path): raise SourceUnavailable("TikTok media validation failed")
-    result = await process_archive_profile_media({"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}}, Repo(), FailingDownloader(), SimpleNamespace())
-    assert result["failures"] == 1 and result["attached"] == 0 and "TikTok" not in str(result)
+    with pytest.raises(SourceUnavailable, match="TikTok media validation failed"):
+        await process_archive_profile_media(
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}},
+            Repo(), FailingDownloader(), SimpleNamespace(),
+        )
 
 
 @pytest.mark.asyncio
-async def test_unexpected_downloader_error_is_counted_without_raw_provider_cause():
+async def test_targeted_unexpected_downloader_error_is_sanitized_for_queue_retry():
     class FailingDownloader:
         async def download_post(self, _, __):
             raise RuntimeError("https://provider.invalid/private-media")
-    result = await process_archive_profile_media(
-        {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}},
-        Repo(), FailingDownloader(), SimpleNamespace(),
-    )
-    assert result["failures"] == 1 and "https://" not in str(result)
+    with pytest.raises(SourceUnavailable, match="TikTok media download failed") as error:
+        await process_archive_profile_media(
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}},
+            Repo(), FailingDownloader(), SimpleNamespace(),
+        )
+    assert "https://" not in str(error.value)
 
 
 @pytest.mark.asyncio
-async def test_worker_counts_sanitized_storage_failure_without_aborting_bulk():
+async def test_worker_preserves_targeted_storage_failure_for_queue_retry():
     class Downloader:
         async def download_post(self, _, path):
             path.write_bytes(b"video")
@@ -181,11 +185,45 @@ async def test_worker_counts_sanitized_storage_failure_without_aborting_bulk():
     class Service:
         async def persist(self, **_):
             raise SourceUnavailable("profile media storage upload failed")
+    with pytest.raises(SourceUnavailable, match="profile media storage upload failed"):
+        await process_archive_profile_media(
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}},
+            Repo(), Downloader(), Service(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_bulk_profile_media_continues_after_one_video_failure(tmp_path):
+    second_asset = UUID("88888888-8888-8888-8888-888888888888")
+
+    class BulkRepo(Repo):
+        async def list_owned_archived_video_assets(self, user, profile, post_id=None):
+            assert post_id is None
+            return [
+                {"id": ASSET, "asset_type": "video", "original_url": "https://provider.invalid/first"},
+                {"id": second_asset, "asset_type": "video", "original_url": "https://provider.invalid/second"},
+            ]
+
+    class Downloader:
+        async def download_post(self, url, path):
+            if url.endswith("first"):
+                raise SourceUnavailable("TikTok media validation failed")
+            path.write_bytes(b"video")
+            return DownloadedAsset(path, 5, "d" * 64, "video/mp4")
+
+    class Service:
+        async def persist(self, **_):
+            return False
+
     result = await process_archive_profile_media(
-        {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}},
-        Repo(), Downloader(), Service(),
+        {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}},
+        BulkRepo(), Downloader(), Service(),
     )
-    assert result["failures"] == 1 and result["attached"] == 0
+    assert result["total_eligible"] == 2
+    assert result["attached"] == result["uploaded"] == 1
+    assert result["completed"] == 2
+    assert result["reused"] == result["skipped"] == 0
+    assert result["failures"] == 1
 
 
 @pytest.mark.asyncio
