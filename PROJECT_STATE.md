@@ -122,6 +122,14 @@ Updated for v3.8.
   assumed.
 
 ## Completed
+
+## Manual TikTok profile sync — 2026-10-06
+
+- Added a worker-owned, tenant-scoped manual sync queue and safe status projection.
+  A full tt-dlp post-ID scan reconciles removal/restoration, while yt-dlp metadata
+  enrichment remains bounded to the initial 12-post window. No scheduling or
+  automatic media backup is added; the frontend Sync button remains pending.
+
 Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; private R2 archive; separate bot/API/worker services; server-validated Telegram Mini App auth; tenant-scoped reads; shared save pipeline; idempotency/job status; archive browse/detail/download; entitlements/Stars; Saved Friends/story polling; rate limits/monitoring; session vault; Live reliability/security foundations; Railway staging scaffolding; CI/release gates; executable offline staging readiness report with migration floor 020 and service-specific secret boundaries; tenant-safe asynchronous archive deletion with worker-owned R2 cleanup; full asynchronous account deletion with immediate watch/archive disablement and shared-object-safe R2 purge.
 
 ## Current launch gate

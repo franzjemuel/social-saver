@@ -338,8 +338,8 @@ class Repository:
                 (user_id,platform,platform_account_id,username,display_name,bio,avatar_url,metadata)
                values($1,$2,$3,$4,$5,$6,$7,$8)
                on conflict(user_id,platform,platform_account_id) do update set
-                 username=excluded.username, display_name=excluded.display_name,
-                 bio=excluded.bio, avatar_url=excluded.avatar_url,
+                 username=excluded.username, display_name=coalesce(excluded.display_name, archived_profiles.display_name),
+                 bio=coalesce(excluded.bio, archived_profiles.bio), avatar_url=coalesce(excluded.avatar_url, archived_profiles.avatar_url),
                  metadata=excluded.metadata, last_observed_at=now()
                returning id""",
             user_id, profile.platform, profile.platform_account_id, profile.username,
@@ -499,6 +499,44 @@ class Repository:
         return await self.pool.fetchrow(
             "select id from archived_profiles where id=$1 and user_id=$2", profile_id, user_id,
         )
+
+    async def create_owned_profile_sync_job(self, user_id, chat_id, profile_id, *, queue_name):
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                profile = await con.fetchrow("""select id,platform,username,platform_account_id from archived_profiles
+                    where id=$1::uuid and user_id=$2 for update""", profile_id, user_id)
+                if profile is None or profile["platform"] != "tiktok":
+                    return None
+                await con.execute("select pg_advisory_xact_lock(hashtextextended($1,0))", f"profile-sync:{user_id}:{profile_id}")
+                active = await con.fetchrow("""select id from jobs where user_id=$1 and job_type='sync_profile'
+                    and status in ('queued','running') and input->>'profile_id'=$2::uuid::text limit 1 for update""", user_id, profile_id)
+                if active:
+                    return active["id"], False
+                job = await con.fetchrow("""insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel)
+                    values($1,$2,'sync_profile',jsonb_build_object('profile_id',$3::uuid),'mini_app') returning id""", user_id, chat_id, profile_id)
+                await con.fetchval("select * from pgmq.send($1,jsonb_build_object('version',1,'job_id',$2::text),0)", queue_name, str(job["id"]))
+                return job["id"], True
+
+    async def get_owned_profile_sync(self, user_id, job_id):
+        return await self.pool.fetchrow("""select id,status,progress,result,error_code from jobs
+            where id=$1::uuid and user_id=$2 and job_type='sync_profile'""", job_id, user_id)
+
+    async def get_owned_profile_sync_target(self, user_id, profile_id):
+        return await self.pool.fetchrow("""select id,username,platform_account_id from archived_profiles
+            where id=$1::uuid and user_id=$2 and platform='tiktok'""", profile_id, user_id)
+
+    async def reconcile_archived_profile_presence(self, user_id, profile_id, current_post_ids):
+        """Atomically mark only actual present/removed transitions; preserve all assets."""
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                rows = await con.fetch("""update archived_posts post set is_present_on_original=
+                    post.platform_post_id = any($3::text[]), last_observed_at=now()
+                    from archived_profiles profile where profile.id=post.archived_profile_id
+                    and profile.id=$1::uuid and profile.user_id=$2
+                    and post.is_present_on_original is distinct from (post.platform_post_id = any($3::text[]))
+                    returning post.is_present_on_original""", profile_id, user_id, current_post_ids)
+        restored = sum(1 for row in rows if row["is_present_on_original"])
+        return len(rows) - restored, restored
 
     async def create_owned_profile_media_job(self, user_id, chat_id, profile_id, post_id=None, *, queue_name=None):
         """Create one active owned media job, coalescing duplicate requests.

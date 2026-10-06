@@ -455,6 +455,13 @@ class ProfileArchiveMediaJobResponse(BaseModel):
     job_id: str
     status: str = "queued"
 
+class ProfileSyncStatus(BaseModel):
+    job_id: str
+    status: str
+    progress: int
+    summary: dict[str, int] | None = None
+    error_code: str | None = None
+
 
 class ProfileArchivePlaybackResponse(BaseModel):
     available: bool
@@ -480,6 +487,35 @@ def _profile_video_download_filename(platform: str, platform_post_id: str) -> st
     safe_platform = re.sub(r"[^A-Za-z0-9_-]", "", platform)[:24] or "video"
     safe_post_id = re.sub(r"[^A-Za-z0-9_-]", "", platform_post_id)[:80] or "video"
     return f"social-saver-{safe_platform}-{safe_post_id}.mp4"
+
+@app.post("/v1/profile-archives/{profile_id}/sync", response_model=ProfileArchiveMediaJobResponse,
+          status_code=status.HTTP_202_ACCEPTED)
+async def sync_profile_archive(profile_id: str, identity=Depends(current_identity)):
+    if _repo is None or _queue is None:
+        raise HTTPException(status_code=503, detail="api_not_ready")
+    try:
+        job = await _repo.create_owned_profile_sync_job(identity["app_user_id"], identity["telegram_user_id"], UUID(profile_id), queue_name=_queue.queue_name)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="profile_archive_not_found") from None
+    if job is None:
+        raise HTTPException(status_code=404, detail="profile_archive_not_found")
+    return ProfileArchiveMediaJobResponse(job_id=str(job[0]))
+
+@app.get("/v1/profile-syncs/{job_id}", response_model=ProfileSyncStatus)
+async def profile_sync_status(job_id: str, identity=Depends(current_identity)):
+    if _repo is None:
+        raise HTTPException(status_code=503, detail="api_not_ready")
+    try:
+        row = await _repo.get_owned_profile_sync(identity["app_user_id"], UUID(job_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="profile_sync_not_found") from None
+    if row is None:
+        raise HTTPException(status_code=404, detail="profile_sync_not_found")
+    if row["status"] == "completed" and isinstance(row["result"], dict):
+        summary = {k: row["result"].get(k, 0) for k in ("posts_added", "posts_refreshed", "posts_removed", "posts_restored", "metadata_failures")}
+    else: summary = None
+    return ProfileSyncStatus(job_id=str(row["id"]), status=row["status"], progress=row["progress"], summary=summary,
+                             error_code=None if row["status"] != "failed" else _profile_import_failure_code(row["error_code"]))
 
 
 def _is_telegram_thumbnail_candidate(value: object) -> bool:
