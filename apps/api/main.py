@@ -234,6 +234,7 @@ _PROFILE_IMPORT_ERROR_CODES = {
     "PROVIDER_RATE_LIMITED": "provider_rate_limited",
     "PROFILE_CHANGED": "profile_changed",
     "IMPORT_FAILED": "import_failed",
+    "FULL_SYNC_FAILED": "full_sync_failed",
 }
 
 
@@ -463,6 +464,14 @@ class ProfileSyncStatus(BaseModel):
     error_code: str | None = None
 
 
+class ProfileFullSyncStatus(BaseModel):
+    job_id: str
+    status: str
+    progress: int
+    summary: dict[str, int] | None = None
+    error_code: str | None = None
+
+
 class ProfileArchivePlaybackResponse(BaseModel):
     available: bool
     media_type: str
@@ -516,6 +525,61 @@ async def profile_sync_status(job_id: str, identity=Depends(current_identity)):
     else: summary = None
     return ProfileSyncStatus(job_id=str(row["id"]), status=row["status"], progress=row["progress"], summary=summary,
                              error_code=None if row["status"] != "failed" else _profile_import_failure_code(row["error_code"]))
+
+
+@app.post("/v1/profile-archives/{profile_id}/full-sync", response_model=ProfileArchiveMediaJobResponse,
+          status_code=status.HTTP_202_ACCEPTED)
+async def full_sync_profile_archive(profile_id: str, identity=Depends(current_identity)):
+    if _repo is None or _queue is None:
+        raise HTTPException(status_code=503, detail="api_not_ready")
+    try:
+        job = await _repo.create_owned_profile_full_sync_job(
+            identity["app_user_id"],
+            identity["telegram_user_id"],
+            UUID(profile_id),
+            queue_name=_queue.queue_name,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="profile_archive_not_found") from None
+    if job is None:
+        raise HTTPException(status_code=404, detail="profile_archive_not_found")
+    return ProfileArchiveMediaJobResponse(job_id=str(job[0]))
+
+
+def _profile_full_sync_summary(row):
+    source = row["result"] if row["status"] == "completed" and isinstance(row["result"], dict) else row["checkpoint"]
+    if not isinstance(source, dict):
+        return None
+    processed = source.get("posts_processed")
+    if not isinstance(processed, int):
+        values = source.get("processed_post_ids")
+        processed = len(values) if isinstance(values, list) else 0
+    keys = (
+        "posts_discovered", "posts_added", "posts_refreshed", "posts_removed",
+        "posts_restored", "posts_enriched", "metadata_failures",
+    )
+    summary = {key: source.get(key, 0) if isinstance(source.get(key, 0), int) else 0 for key in keys}
+    summary["posts_processed"] = processed
+    return summary
+
+
+@app.get("/v1/profile-full-syncs/{job_id}", response_model=ProfileFullSyncStatus)
+async def profile_full_sync_status(job_id: str, identity=Depends(current_identity)):
+    if _repo is None:
+        raise HTTPException(status_code=503, detail="api_not_ready")
+    try:
+        row = await _repo.get_owned_profile_full_sync(identity["app_user_id"], UUID(job_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="profile_full_sync_not_found") from None
+    if row is None:
+        raise HTTPException(status_code=404, detail="profile_full_sync_not_found")
+    return ProfileFullSyncStatus(
+        job_id=str(row["id"]),
+        status=row["status"],
+        progress=row["progress"],
+        summary=_profile_full_sync_summary(row),
+        error_code=None if row["status"] != "failed" else _profile_import_failure_code(row["error_code"]),
+    )
 
 
 def _is_telegram_thumbnail_candidate(value: object) -> bool:

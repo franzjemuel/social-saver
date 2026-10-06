@@ -16,6 +16,7 @@ from apps.worker.processors.profile_archive_media import process_archive_profile
 from apps.worker.processors.profile_import_validation import process_validate_profile_import
 from apps.worker.processors.profile_import import process_import_profile, TikTokProfileImportFailure
 from apps.worker.processors.profile_sync import process_sync_profile, TikTokProfileSyncFailure
+from apps.worker.processors.profile_full_sync import process_full_sync_profile, TikTokProfileFullSyncFailure
 from providers.tiktok.validation import TikTokProfileValidationFailure
 from core.observability import init_observability, capture_job_exception
 from core.rate_limits import provider_concurrency
@@ -137,6 +138,10 @@ async def main():
                     async with provider_concurrency.for_platform("tiktok"):
                         result = await process_sync_profile(job, repo)
                     success_message = None
+                elif job["job_type"] == "full_sync_profile":
+                    async with provider_concurrency.for_platform("tiktok"):
+                        result = await process_full_sync_profile(job, repo)
+                    success_message = None
                 else:
                     raise ValueError(f"Unknown job type: {job['job_type']}")
 
@@ -158,6 +163,9 @@ async def main():
                 await repo.fail_job(job_id, exc.code.upper(), exc.code)
                 await queue.archive(msg["msg_id"])
             except TikTokProfileSyncFailure as exc:
+                await repo.fail_job(job_id, exc.code.upper(), exc.code)
+                await queue.archive(msg["msg_id"])
+            except TikTokProfileFullSyncFailure as exc:
                 await repo.fail_job(job_id, exc.code.upper(), exc.code)
                 await queue.archive(msg["msg_id"])
             except Exception as exc:

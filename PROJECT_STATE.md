@@ -123,6 +123,19 @@ Updated for v3.8.
 
 ## Completed
 
+## Full TikTok profile sync — 2026-10-06
+
+- Added an explicit tenant-scoped full-profile metadata sync that keeps Add Profile's
+  fast initial 12-post import unchanged. A full tt-dlp scan indexes every currently
+  discoverable post before sequential yt-dlp enrichment, with private durable job
+  checkpoints so worker retries resume instead of restarting historical enrichment.
+- Ordinary manual Sync now also scanner-indexes every newly discovered post ID while
+  retaining its bounded 12-post rich refresh. Full Sync never auto-downloads MP4
+  bytes; existing Back up videos remains the media-persistence boundary.
+- The existing paginated posts API remains the browser contract for large profiles;
+  frontend progressive loading/full-profile controls remain pending until hosted
+  backend acceptance.
+
 ## Manual TikTok profile sync — 2026-10-06
 
 - Added a worker-owned, tenant-scoped manual sync queue and safe status projection.
