@@ -500,6 +500,86 @@ class Repository:
             "select id from archived_profiles where id=$1 and user_id=$2", profile_id, user_id,
         )
 
+    async def insert_archived_posts_if_missing(self, user_id, archived_profile_id, posts):
+        """Index scanner-discovered posts without overwriting richer existing rows."""
+        inserted = set()
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                owned = await con.fetchval(
+                    "select id from archived_profiles where id=$1::uuid and user_id=$2",
+                    archived_profile_id, user_id,
+                )
+                if owned is None:
+                    raise PermissionError("Archived profile not found")
+                for post in posts:
+                    platform_post_id = await con.fetchval(
+                        """insert into archived_posts
+                            (archived_profile_id,platform_post_id,original_url,media_type,caption,
+                             published_at,thumbnail_url,is_present_on_original,metadata)
+                           values($1::uuid,$2,$3,$4,$5,$6,$7,true,$8)
+                           on conflict(archived_profile_id,platform_post_id) do nothing
+                           returning platform_post_id""",
+                        archived_profile_id, post.platform_post_id, post.original_url,
+                        post.media_type, post.caption, post.published_at, post.thumbnail_url,
+                        post.metadata,
+                    )
+                    if platform_post_id is not None:
+                        inserted.add(platform_post_id)
+        return inserted
+
+    async def create_owned_profile_full_sync_job(self, user_id, chat_id, profile_id, *, queue_name):
+        """Atomically queue one tenant-owned full-history metadata sync."""
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                profile = await con.fetchrow(
+                    """select id,platform from archived_profiles
+                       where id=$1::uuid and user_id=$2 for update""",
+                    profile_id, user_id,
+                )
+                if profile is None or profile["platform"] != "tiktok":
+                    return None
+                await con.execute(
+                    "select pg_advisory_xact_lock(hashtextextended($1,0))",
+                    f"profile-full-sync:{user_id}:{profile_id}",
+                )
+                active = await con.fetchrow(
+                    """select id from jobs where user_id=$1 and job_type='full_sync_profile'
+                       and status in ('queued','running')
+                       and input->>'profile_id'=$2::uuid::text
+                       order by created_at limit 1 for update""",
+                    user_id, profile_id,
+                )
+                if active is not None:
+                    return active["id"], False
+                job = await con.fetchrow(
+                    """insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel)
+                       values($1,$2,'full_sync_profile',
+                              jsonb_build_object('profile_id',$3::uuid),'mini_app')
+                       returning id""",
+                    user_id, chat_id, profile_id,
+                )
+                await con.fetchval(
+                    "select * from pgmq.send($1,jsonb_build_object('version',1,'job_id',$2::text),0)",
+                    queue_name, str(job["id"]),
+                )
+                return job["id"], True
+
+    async def get_owned_profile_full_sync(self, user_id, job_id):
+        return await self.pool.fetchrow(
+            """select id,status,progress,result,error_code,input->'checkpoint' as checkpoint
+               from jobs where id=$1::uuid and user_id=$2 and job_type='full_sync_profile'""",
+            job_id, user_id,
+        )
+
+    async def update_profile_full_sync_checkpoint(self, job_id, checkpoint, progress):
+        """Persist private resume state plus coarse browser-safe progress."""
+        await self.pool.execute(
+            """update jobs
+               set input=jsonb_set(input,'{checkpoint}',$2::jsonb,true), progress=$3
+               where id=$1::uuid and job_type='full_sync_profile' and status='running'""",
+            job_id, checkpoint, progress,
+        )
+
     async def create_owned_profile_sync_job(self, user_id, chat_id, profile_id, *, queue_name):
         async with self.pool.acquire() as con:
             async with con.transaction():
