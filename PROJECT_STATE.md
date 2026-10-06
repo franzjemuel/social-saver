@@ -88,6 +88,13 @@ Updated for v3.8.
   single-video operational acceptance is complete. Full-profile batches,
   photo/carousel persistence, and the separate frontend playback PR remain future
   work.
+- Bulk profile-video backup now reuses that same tenant-owned queue, native
+  no-cookie acquisition, SHA-256/R2 persistence, and playback path for every
+  unpersisted video among the bounded initial archive posts. It skips already
+  attached videos and preserves successful attachments when an individual video
+  fails, returning only aggregate safe counts. Photo and carousel media remain
+  metadata-only; frontend backup/progress controls and device downloads remain
+  future work.
 
 ## Completed
 Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; private R2 archive; separate bot/API/worker services; server-validated Telegram Mini App auth; tenant-scoped reads; shared save pipeline; idempotency/job status; archive browse/detail/download; entitlements/Stars; Saved Friends/story polling; rate limits/monitoring; session vault; Live reliability/security foundations; Railway staging scaffolding; CI/release gates; executable offline staging readiness report with migration floor 020 and service-specific secret boundaries; tenant-safe asynchronous archive deletion with worker-owned R2 cleanup; full asynchronous account deletion with immediate watch/archive disablement and shared-object-safe R2 purge.

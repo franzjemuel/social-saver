@@ -31,6 +31,7 @@ class Repo:
     async def get_stored_object_by_sha(self, sha): return self.stored
     async def create_stored_object(self, *args): self.calls.append(("create", args)); return UUID("66666666-6666-6666-6666-666666666666")
     async def attach_owned_archived_post_media_object(self, *args): self.calls.append(("attach", args)); return ASSET
+    async def update_job_progress(self, *_): return None
 
 
 @pytest.mark.asyncio
@@ -89,7 +90,7 @@ async def test_worker_persists_video_reuses_sha_and_skips_photo(tmp_path):
     class Service:
         async def persist(self, **kwargs): return False
     result = await process_archive_profile_media({"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, Repo(), Downloader(), Service())
-    assert result == {"profile_id": str(PROFILE), "post_id": None, "attached": 1, "uploaded": 1, "reused": 0, "skipped": 1, "failures": 0}
+    assert result == {"profile_id": str(PROFILE), "post_id": None, "attached": 1, "uploaded": 1, "reused": 0, "skipped": 1, "failures": 0, "total_eligible": 1, "completed": 1}
     storage = SimpleNamespace(put_file=None)
     uploads = []
     async def put(path, key, content): uploads.append((path, key)); return None
@@ -152,30 +153,27 @@ async def test_single_post_route_and_worker_never_fall_through(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_profile_media_failure_propagates_for_retry():
+async def test_profile_media_failure_is_partial_and_sanitized():
     class FailingDownloader:
         async def download_post(self, url, path): raise SourceUnavailable("TikTok media validation failed")
-    with pytest.raises(Exception) as error:
-        await process_archive_profile_media({"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}}, Repo(), FailingDownloader(), SimpleNamespace())
-    assert str(error.value) == "TikTok media validation failed"
+    result = await process_archive_profile_media({"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}}, Repo(), FailingDownloader(), SimpleNamespace())
+    assert result["failures"] == 1 and result["attached"] == 0 and "TikTok" not in str(result)
 
 
 @pytest.mark.asyncio
-async def test_unexpected_downloader_error_drops_raw_provider_cause():
+async def test_unexpected_downloader_error_is_counted_without_raw_provider_cause():
     class FailingDownloader:
         async def download_post(self, _, __):
             raise RuntimeError("https://provider.invalid/private-media")
-    with pytest.raises(SourceUnavailable, match="TikTok media download failed") as error:
-        await process_archive_profile_media(
-            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}},
-            Repo(), FailingDownloader(), SimpleNamespace(),
-        )
-    assert error.value.__cause__ is None
-    assert "https://" not in str(error.value)
+    result = await process_archive_profile_media(
+        {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}},
+        Repo(), FailingDownloader(), SimpleNamespace(),
+    )
+    assert result["failures"] == 1 and "https://" not in str(result)
 
 
 @pytest.mark.asyncio
-async def test_worker_preserves_sanitized_storage_failure_stage():
+async def test_worker_counts_sanitized_storage_failure_without_aborting_bulk():
     class Downloader:
         async def download_post(self, _, path):
             path.write_bytes(b"video")
@@ -183,11 +181,11 @@ async def test_worker_preserves_sanitized_storage_failure_stage():
     class Service:
         async def persist(self, **_):
             raise SourceUnavailable("profile media storage upload failed")
-    with pytest.raises(SourceUnavailable, match="profile media storage upload failed"):
-        await process_archive_profile_media(
-            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}},
-            Repo(), Downloader(), Service(),
-        )
+    result = await process_archive_profile_media(
+        {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}},
+        Repo(), Downloader(), Service(),
+    )
+    assert result["failures"] == 1 and result["attached"] == 0
 
 
 @pytest.mark.asyncio

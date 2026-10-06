@@ -35,10 +35,11 @@
 - [x] Add provider-neutral private profile archive schema, bounded async-safe tt-dlp TikTok profile scanner, and yt-dlp per-post metadata normalizer (v3.9 foundation).
 - [x] Add worker-owned, SHA-256-deduplicated private R2 persistence and authorized playback for profile archive videos, with real-Postgres UUID queue binding coverage and native no-cookie yt-dlp concrete-post acquisition.
 - [x] Complete the one-video TikTok profile-media persistence/playback/idempotency acceptance using `docs/profile-archive-media-canary.md`; one of 12 benchmark posts now has private persisted video and the other 11 remain intentionally unprocessed.
+- [x] Reuse the bounded profile-media worker path to back up all eligible imported TikTok videos while skipping already persisted assets; photo/carousel persistence remains unsupported.
 - [x] Add tenant-authenticated TikTok profile-target validation jobs and safe status previews for the future Add Profile flow.
 - [x] Add profile-import confirmation and bounded worker-owned TikTok metadata import after validation; do not imply full media persistence.
 - [ ] Build Add Profile UI (input, preview/confirm, and progress) in the frontend; existing archive browse/detail and playback remain separate.
-- [ ] Add bounded resumable profile-video batches; single-video acceptance passed. See `docs/profile-archive-media-next-steps.md` for photo/carousel, rescan/removal, and historical-engagement design.
+- [ ] Add frontend video-backup/progress controls and later bounded resumable larger-history batches. See `docs/profile-archive-media-next-steps.md` for photo/carousel, rescan/removal, and historical-engagement design.
 - [ ] Facebook provider adapter after Instagram launch gate.
 - [ ] Facebook Stories through existing watch/archive contracts.
 
