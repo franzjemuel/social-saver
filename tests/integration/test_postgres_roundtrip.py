@@ -359,6 +359,50 @@ async def test_profile_media_playback_and_acquisition_are_tenant_scoped(database
     assert deleted_playback is not None and deleted_playback['storage_key'] is None
 
 
+async def test_profile_sync_jobs_and_presence_reconciliation_are_tenant_safe(database):
+    """Exercise sync locking, PGMQ enqueue, transitions, and retained media in Postgres."""
+    repo = Repository(database.pool); queue = JobQueue(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval("""insert into archived_profiles(user_id,platform,platform_account_id,username)
+        values($1,'tiktok','sync-owner','owner') returning id""", owner)
+    other_profile = await database.pool.fetchval("""insert into archived_profiles(user_id,platform,platform_account_id,username)
+        values($1,'tiktok','sync-other','other') returning id""", other)
+    first = await repo.create_owned_profile_sync_job(owner, 1, profile, queue_name=queue.queue_name)
+    second = await repo.create_owned_profile_sync_job(owner, 1, profile, queue_name=queue.queue_name)
+    assert first[0] == second[0] and first[1] is True and second[1] is False
+    assert await repo.create_owned_profile_sync_job(other, 2, profile, queue_name=queue.queue_name) is None
+    separate = await repo.create_owned_profile_sync_job(other, 2, other_profile, queue_name=queue.queue_name)
+    assert separate[0] != first[0]
+    assert await repo.get_owned_profile_sync(other, first[0]) is None
+    messages = await queue.claim(10)
+    matching = [m for m in messages if m['message']['job_id'] in {str(first[0]), str(separate[0])}]
+    assert len(matching) == 2
+    for message in matching: await queue.archive(message['msg_id'])
+
+    states = [('present','video',True), ('removed','video',True), ('restored','video',False), ('still-removed','video',False)]
+    post_ids = {}
+    for platform_id, media_type, present in states:
+        post_ids[platform_id] = await database.pool.fetchval("""insert into archived_posts
+          (archived_profile_id,platform_post_id,original_url,media_type,is_present_on_original)
+          values($1,$2,'https://example.invalid/' || $2,$3,$4) returning id""", profile, platform_id, media_type, present)
+    object_id = await database.pool.fetchval("""insert into stored_objects(sha256,storage_key,size_bytes,content_type)
+       values('c' || repeat('0',63),'sync-retained',1,'video/mp4') returning id""")
+    await database.pool.execute("""insert into archived_post_media_assets(archived_post_id,position,asset_type,stored_object_id)
+       values($1,0,'video',$2)""", post_ids['removed'], object_id)
+    removed, restored = await repo.reconcile_archived_profile_presence(owner, profile, ['present','restored'])
+    assert (removed, restored) == (1, 1)
+    values = {row['platform_post_id']: row['is_present_on_original'] for row in await database.pool.fetch(
+        'select platform_post_id,is_present_on_original from archived_posts where archived_profile_id=$1', profile)}
+    assert values == {'present': True, 'removed': False, 'restored': True, 'still-removed': False}
+    assert await repo.reconcile_archived_profile_presence(owner, profile, ['present','restored']) == (0, 0)
+    playback = await repo.get_owned_archived_post_playback(owner, profile, post_ids['removed'])
+    assert playback['storage_key'] == 'sync-retained'
+    assert await database.pool.fetchval('select deleted_at is null from stored_objects where id=$1', object_id)
+    posts = await repo.list_owned_archived_profile_posts(owner, profile)
+    assert next(row for row in posts if row['platform_post_id'] == 'removed')['has_archived_media'] is True
+
+
 async def test_canary_transaction_leaves_no_queue(database, monkeypatch):
     monkeypatch.setattr(staging_canary.settings, 'app_env', 'staging')
     before = await database.pool.fetch('select queue_name from pgmq.list_queues() order by queue_name')
