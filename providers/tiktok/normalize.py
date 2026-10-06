@@ -109,13 +109,16 @@ def normalize_tiktok_post(
     )
 
 
-def normalize_scanned_tiktok_post(post_id: str, canonical_url: str, *, is_photo: bool, caption: str | None, error: str) -> ArchivedPost:
-    """Keep a scanner-discovered post when optional rich metadata fails."""
+def normalize_scanned_tiktok_post(
+    post_id: str, canonical_url: str, *, is_photo: bool, caption: str | None,
+    error: str | None = None,
+) -> ArchivedPost:
+    """Keep a scanner-discovered post even when rich metadata is unavailable."""
     return ArchivedPost(
         platform_post_id=post_id,
         original_url=canonical_url,
         media_type="photo" if is_photo else "video",
         assets=[],
         caption=caption,
-        metadata={"metadata_resolution_error": error},
+        metadata={"metadata_resolution_error": error} if error else {},
     )
