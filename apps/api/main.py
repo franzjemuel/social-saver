@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime
+import re
 import time
 from uuid import UUID
 
@@ -452,6 +453,19 @@ class ProfileArchivePlaybackResponse(BaseModel):
     expires_in: int | None = None
 
 
+class ProfileArchiveDownloadResponse(BaseModel):
+    available: bool
+    download_url: str | None = None
+    expires_in: int | None = None
+
+
+def _profile_video_download_filename(platform: str, platform_post_id: str) -> str:
+    """Build a conservative attachment filename from server-owned identifiers."""
+    safe_platform = re.sub(r"[^A-Za-z0-9_-]", "", platform)[:24] or "video"
+    safe_post_id = re.sub(r"[^A-Za-z0-9_-]", "", platform_post_id)[:80] or "video"
+    return f"social-saver-{safe_platform}-{safe_post_id}.mp4"
+
+
 @app.post("/v1/profile-archives/{profile_id}/archive-media", response_model=ProfileArchiveMediaJobResponse,
           status_code=status.HTTP_202_ACCEPTED)
 async def archive_profile_media(profile_id: str, identity=Depends(current_identity)):
@@ -511,6 +525,34 @@ async def profile_archive_playback(profile_id: str, post_id: str, identity=Depen
     return ProfileArchivePlaybackResponse(
         available=True, media_type=row["media_type"], playback_url=url,
         expires_in=settings.archive_presign_seconds,
+    )
+
+
+@app.post("/v1/profile-archives/{profile_id}/posts/{post_id}/download",
+          response_model=ProfileArchiveDownloadResponse)
+async def profile_archive_download(profile_id: str, post_id: str, identity=Depends(current_identity)):
+    """Mint a tenant-authorized attachment URL for an already archived video."""
+    if _repo is None or _r2 is None:
+        raise HTTPException(status_code=503, detail="archive_download_unavailable")
+    try:
+        profile = UUID(profile_id)
+        post = UUID(post_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="profile_archive_not_found") from None
+    row = await _repo.get_owned_archived_post_playback(identity["app_user_id"], profile, post)
+    if row is None:
+        raise HTTPException(status_code=404, detail="profile_archive_not_found")
+    if row["storage_key"] is None or row["media_type"] != "video":
+        return ProfileArchiveDownloadResponse(available=False)
+    filename = _profile_video_download_filename(row["platform"], row["platform_post_id"])
+    try:
+        url = await _r2.presigned_download(
+            row["storage_key"], filename, row["content_type"], settings.archive_presign_seconds,
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="archive_download_unavailable") from None
+    return ProfileArchiveDownloadResponse(
+        available=True, download_url=url, expires_in=settings.archive_presign_seconds,
     )
 
 

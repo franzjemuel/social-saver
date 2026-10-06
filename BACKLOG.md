@@ -36,6 +36,7 @@
 - [x] Add worker-owned, SHA-256-deduplicated private R2 persistence and authorized playback for profile archive videos, with real-Postgres UUID queue binding coverage and native no-cookie yt-dlp concrete-post acquisition.
 - [x] Complete the one-video TikTok profile-media persistence/playback/idempotency acceptance using `docs/profile-archive-media-canary.md`; one of 12 benchmark posts now has private persisted video and the other 11 remain intentionally unprocessed.
 - [x] Reuse the bounded profile-media worker path to back up all eligible imported TikTok videos while skipping already persisted assets; photo/carousel persistence remains unsupported.
+- [x] Add tenant-authorized attachment download links for already archived profile videos; frontend Save control remains pending.
 - [x] Add tenant-authenticated TikTok profile-target validation jobs and safe status previews for the future Add Profile flow.
 - [x] Add profile-import confirmation and bounded worker-owned TikTok metadata import after validation; do not imply full media persistence.
 - [ ] Build Add Profile UI (input, preview/confirm, and progress) in the frontend; existing archive browse/detail and playback remain separate.
