@@ -109,6 +109,31 @@ async def test_job_tenant_boundary_and_dead_letter(database):
     await dead_queue.archive(dead[0]['msg_id'])
 
 
+async def test_queue_extend_visibility_uses_unambiguous_pgmq_signature(database):
+    """The v1.10 PGMQ single-message overload needs explicitly typed binds."""
+    signatures = await database.pool.fetch(
+        """select pg_get_function_identity_arguments(p.oid) as signature
+           from pg_proc p
+           join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'pgmq' and p.proname = 'set_vt'
+           order by signature"""
+    )
+    assert 'queue_name text, msg_id bigint, vt integer' in {
+        row['signature'] for row in signatures
+    }
+
+    queue = JobQueue(database.pool)
+    job_id = str(uuid4())
+    message_id = await queue.send(job_id)
+    messages = await queue.claim(10)
+    message = next(message for message in messages if message['msg_id'] == message_id)
+
+    extended = await queue.extend_visibility(message['msg_id'], 60)
+    assert extended is not None
+    assert extended['msg_id'] == message_id
+    await queue.archive(message_id)
+
+
 async def test_profile_media_job_uuid_parameters_use_real_postgres(database):
     """Regression for UUID parameter inference in the profile-media queue query."""
     repo = Repository(database.pool)
