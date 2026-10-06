@@ -84,3 +84,12 @@
 - [x] Implement/test authenticated Reel fallback with session stop/cooldown guards.
 - [ ] Pass fallback CI, review/release to staging, verify account session and retry
   one authorized Reel. Telegram media delivery remains unproven.
+
+
+## Full profile archive follow-up — 2026-10-06
+
+- Backend full-history TikTok indexing/enrichment is implemented on the review branch.
+- Frontend still needs an explicit Full Sync/Complete Profile control plus progressive
+  pagination through `GET /v1/profile-archives/{profile_id}/posts`.
+- Full Sync remains metadata-only; automatic full-account MP4 backup is intentionally
+  separate from this increment.
