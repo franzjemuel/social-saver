@@ -35,7 +35,9 @@
 - [x] Add provider-neutral private profile archive schema, bounded async-safe tt-dlp TikTok profile scanner, and yt-dlp per-post metadata normalizer (v3.9 foundation).
 - [x] Add worker-owned, SHA-256-deduplicated private R2 persistence and authorized playback for profile archive videos, with real-Postgres UUID queue binding coverage and native no-cookie yt-dlp concrete-post acquisition.
 - [x] Complete the one-video TikTok profile-media persistence/playback/idempotency acceptance using `docs/profile-archive-media-canary.md`; one of 12 benchmark posts now has private persisted video and the other 11 remain intentionally unprocessed.
-- [x] Reuse the bounded profile-media worker path to back up all eligible imported TikTok videos while skipping already persisted assets; photo/carousel persistence remains unsupported.
+- [x] Preserve ordered TikTok photo/carousel candidate metadata and provider-neutral `photo` asset rows during import and sync; no image bytes are downloaded or exposed to browsers.
+- [ ] Extend the worker-owned profile-media path to validate, persist, deduplicate, and privately serve bounded TikTok photo/carousel assets; preserve partial carousel progress and do not alter video behavior. Define durable upstream-image identity/reorder reconciliation before changing attached asset positions.
+- [x] Reuse the bounded profile-media worker path to back up all eligible imported TikTok videos while skipping already persisted assets.
 - [x] Add tenant-authorized attachment download links for already archived profile videos; frontend Save control remains pending.
 - [x] Add tenant-authorized Telegram prepared-message creation for an already archived TikTok MP4; frontend native-share control and hosted Telegram acceptance remain pending.
 - [x] Add tenant-authenticated TikTok profile-target validation jobs and safe status previews for the future Add Profile flow.

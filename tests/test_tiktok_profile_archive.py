@@ -7,7 +7,7 @@ import pytest
 from core.repository import Repository
 from providers.base import ArchivedPost
 from providers.tiktok.importer import TikTokProfileImporter
-from providers.tiktok.normalize import normalize_tiktok_post, normalize_tiktok_profile
+from providers.tiktok.normalize import normalize_scanned_tiktok_post, normalize_tiktok_post, normalize_tiktok_profile
 from providers.base import SourceUnavailable
 from providers.tiktok.provider import DEVELOPMENT_MAX_POSTS, TikTokProfileProvider
 from providers.tiktok.scanner import (
@@ -60,6 +60,52 @@ def test_tiktok_post_is_provider_neutral_and_has_media_assets():
     assert post.assets[0].duration_seconds == 14.0
 
 
+def test_photo_normalization_preserves_single_image_and_ordered_carousel_candidates():
+    single = normalize_tiktok_post(
+        BENCHMARK_ENTRY,
+        is_photo=True,
+        photo_candidate_groups=(("https://images.example.invalid/one.jpg",),),
+    )
+    carousel = normalize_tiktok_post(
+        BENCHMARK_ENTRY,
+        is_photo=True,
+        photo_candidate_groups=(
+            ("https://images.example.invalid/0.jpg", "https://fallback.example.invalid/0.jpg"),
+            ("https://images.example.invalid/1.jpg",),
+            ("https://images.example.invalid/2.jpg",),
+        ),
+    )
+
+    assert single.media_type == "photo"
+    assert [(asset.position, asset.asset_type) for asset in single.assets] == [(0, "photo")]
+    assert carousel.media_type == "carousel"
+    assert [asset.position for asset in carousel.assets] == [0, 1, 2]
+    assert carousel.assets[0].source_url == "https://images.example.invalid/0.jpg"
+    assert carousel.assets[0].metadata == {
+        "fallback_source_urls": ["https://fallback.example.invalid/0.jpg"],
+    }
+    assert carousel.metadata["image_count"] == 3
+
+
+def test_scanned_photo_fallback_preserves_assets_without_rich_metadata():
+    post = normalize_scanned_tiktok_post(
+        "post", "https://www.tiktok.com/@creator/photo/post",
+        is_photo=True,
+        caption="scanner caption",
+        error="SourceUnavailable",
+        photo_candidate_groups=(
+            ("https://images.example.invalid/0.jpg",),
+            (),
+            ("https://images.example.invalid/2.jpg",),
+        ),
+    )
+
+    assert post.media_type == "carousel"
+    assert [asset.position for asset in post.assets] == [0, 2]
+    assert post.caption == "scanner caption"
+    assert post.metadata["metadata_resolution_error"] == "SourceUnavailable"
+
+
 @pytest.mark.asyncio
 async def test_profile_discovery_enforces_development_limit_after_scanning():
     scanner = FakeScanner(post_count=13)
@@ -86,10 +132,11 @@ class FakeIdentity:
 
 
 class FakeItem:
-    def __init__(self, post_id, *, photo=False):
+    def __init__(self, post_id, *, photo=False, image_urls=()):
         self.post_id = post_id
         self.is_photo = photo
         self.description = "scanner caption"
+        self.image_urls = image_urls
 
 
 class FakeScannerClient:
@@ -105,7 +152,17 @@ class FakeScannerClient:
 
     def collect_posts(self, sec_uid, *, profile_url, recent, is_private):
         self.calls.append(("collect", sec_uid, profile_url, recent, is_private))
-        return [FakeItem("7176363825556376859"), FakeItem("7176363825556376860", photo=True)]
+        return [
+            FakeItem("7176363825556376859"),
+            FakeItem(
+                "7176363825556376860", photo=True,
+                image_urls=(
+                    ("https://images.example.invalid/0.jpg", "https://fallback.example.invalid/0.jpg"),
+                    ("https://images.example.invalid/1.jpg",),
+                    ("http://unsafe.example.invalid/2.jpg", "https://127.0.0.1/private.jpg"),
+                ),
+            ),
+        ]
 
 
 def test_tt_dlp_scanner_normalizes_identity_and_canonical_post_urls_without_cookies():
@@ -120,6 +177,11 @@ def test_tt_dlp_scanner_normalizes_identity_and_canonical_post_urls_without_cook
     ]
     assert client.calls[0] == ("creator", "aliachin11")
     assert client.calls[1][-1] is False
+    assert scan.posts[1].image_url_candidates == (
+        ("https://images.example.invalid/0.jpg", "https://fallback.example.invalid/0.jpg"),
+        ("https://images.example.invalid/1.jpg",),
+        (),
+    )
 
 
 def test_tt_dlp_profile_preview_does_not_enumerate_posts():
@@ -140,9 +202,10 @@ def test_default_scanner_configuration_never_loads_cookies_or_authentication():
 
 
 class FakeScanner:
-    def __init__(self, post_count=2, photo_indices=()):
+    def __init__(self, post_count=2, photo_indices=(), photo_candidate_groups_by_index=None):
         self.post_count = post_count
         self.photo_indices = set(photo_indices)
+        self.photo_candidate_groups_by_index = photo_candidate_groups_by_index or {}
         self.calls = []
         self.thread_ids = []
 
@@ -162,6 +225,7 @@ class FakeScanner:
                 ),
                 is_photo=index in self.photo_indices,
                 description="scanner caption",
+                image_url_candidates=self.photo_candidate_groups_by_index.get(index, ()),
             ) for index in range(self.post_count)],
         )
 
@@ -197,15 +261,22 @@ async def test_per_post_yt_dlp_failure_keeps_scanned_post_and_other_metadata():
 
 @pytest.mark.asyncio
 async def test_scanner_confirmed_photo_keeps_type_and_never_gets_video_asset():
-    scanner = FakeScanner(post_count=2, photo_indices={1})
+    scanner = FakeScanner(
+        post_count=2,
+        photo_indices={1},
+        photo_candidate_groups_by_index={
+            1: (("https://images.example.invalid/0.jpg",), ("https://images.example.invalid/1.jpg",)),
+        },
+    )
     resolver = FakeResolver()
 
     _, posts = await TikTokProfileProvider(scanner, resolver).discover_profile("@aliachin11", limit=2)
 
     assert posts[0].media_type == "video"
     assert posts[0].assets[0].asset_type == "video"
-    assert posts[1].media_type == "photo"
-    assert posts[1].assets == []
+    assert posts[1].media_type == "carousel"
+    assert [(asset.position, asset.asset_type) for asset in posts[1].assets] == [(0, "photo"), (1, "photo")]
+    assert all(asset.asset_type != "video" for asset in posts[1].assets)
     assert posts[1].original_url == resolver.urls[1]
 
 

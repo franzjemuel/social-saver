@@ -69,10 +69,12 @@ class TikTokProfileProvider(ProfileArchiveProvider):
                 posts.append(normalize_tiktok_post(
                     metadata, is_photo=scanned.is_photo,
                     canonical_url=scanned.canonical_url,
+                    photo_candidate_groups=scanned.image_url_candidates,
                 ))
             except SourceUnavailable as exc:
                 posts.append(normalize_scanned_tiktok_post(
                     scanned.post_id, scanned.canonical_url, is_photo=scanned.is_photo,
                     caption=scanned.description, error=type(exc).__name__,
+                    photo_candidate_groups=scanned.image_url_candidates,
                 ))
         return profile, posts

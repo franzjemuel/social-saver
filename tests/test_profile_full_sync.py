@@ -22,6 +22,11 @@ def scan_posts(count=109):
             f"https://example.invalid/{index}",
             index % 17 == 0,
             f"caption {index}",
+            (
+                (f"https://images.example.invalid/{index}/0.jpg",),
+                (f"https://images.example.invalid/{index}/1.jpg",),
+                (f"https://images.example.invalid/{index}/2.jpg",),
+            ) if index % 17 == 0 else (),
         )
         for index in range(count)
     ]
@@ -62,6 +67,7 @@ class Repo:
         self.inserted = set(inserted) if inserted is not None else None
         self.calls = []
         self.checkpoints = []
+        self.posts = {}
 
     async def get_owned_profile_sync_target(self, *_):
         return {"username": "creator", "platform_account_id": "stable"}
@@ -78,12 +84,17 @@ class Repo:
         return P
 
     async def insert_archived_posts_if_missing(self, _user_id, _profile_id, posts):
+        posts = list(posts)
         ids = {post.platform_post_id for post in posts}
         self.calls.append(("index", tuple(sorted(ids, key=int))))
-        return ids if self.inserted is None else set(self.inserted)
+        inserted = ids if self.inserted is None else set(self.inserted)
+        for post in posts:
+            self.posts.setdefault(post.platform_post_id, post)
+        return inserted
 
     async def upsert_archived_post(self, _user_id, _profile_id, post):
         self.calls.append(("rich", post.platform_post_id))
+        self.posts[post.platform_post_id] = post
         return P, False
 
     async def update_profile_full_sync_checkpoint(self, _job_id, checkpoint, progress):
@@ -132,6 +143,25 @@ async def test_full_sync_partial_metadata_failure_keeps_index_and_completes():
     assert result["posts_enriched"] == 108
     assert result["metadata_failures"] == 1
     assert len(repo.checkpoints[-1][0]["processed_post_ids"]) == 109
+    fallback = repo.posts["13"]
+    assert fallback.media_type == "video"  # Non-photo scanner fallback remains unchanged.
+
+
+@pytest.mark.asyncio
+async def test_full_sync_photo_fallback_keeps_ordered_assets_without_duplicate_rows():
+    repo = Repo()
+    resolver = Resolver({"17"})
+    job = {"id": "job", "user_id": "user", "input": {"profile_id": P}}
+
+    await process_full_sync_profile(job, repo, Scanner(), resolver)
+    first = repo.posts["17"]
+    assert first.media_type == "carousel"
+    assert [asset.position for asset in first.assets] == [0, 1, 2]
+
+    await process_full_sync_profile(job, repo, Scanner(), Resolver({"17"}))
+    second = repo.posts["17"]
+    assert [asset.position for asset in second.assets] == [0, 1, 2]
+    assert len(second.assets) == 3
 
 
 @pytest.mark.asyncio

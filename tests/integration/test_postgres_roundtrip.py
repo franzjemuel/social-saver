@@ -15,7 +15,7 @@ import pytest_asyncio
 from core.database import Database
 from core.queue import JobQueue
 from core.repository import ProfileImportIdempotencyConflict, Repository
-from providers.base import ArchivedPost
+from providers.base import ArchiveMediaAsset, ArchivedPost
 from ops import staging_canary
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -466,6 +466,122 @@ async def test_full_profile_sync_repository_indexes_109_resumes_and_preserves_me
     assert await database.pool.fetchval(
         'select deleted_at is null from stored_objects where id=$1', object_id,
     )
+
+    # Ordered photo assets use the same attachment table. Scanner hints may be
+    # refreshed only before a position is attached to private archive bytes.
+    # Once attached, preserving its original metadata prevents an upstream
+    # reorder from silently reinterpreting those immutable archive bytes.
+    inserted_photos = await repo.insert_archived_posts_if_missing(
+        owner,
+        profile,
+        [ArchivedPost(
+            platform_post_id='photo-carousel',
+            original_url='https://www.tiktok.com/@creator/photo/photo-carousel',
+            media_type='carousel',
+            assets=[
+                ArchiveMediaAsset(
+                    0, 'photo', 'https://images.example.invalid/0.jpg',
+                    metadata={'fallback_source_urls': ['https://images.example.invalid/0-fallback.jpg']},
+                ),
+                ArchiveMediaAsset(
+                    1, 'photo', 'https://images.example.invalid/1.jpg',
+                    metadata={'fallback_source_urls': ['https://images.example.invalid/1-fallback.jpg']},
+                ),
+                ArchiveMediaAsset(
+                    2, 'photo', 'https://images.example.invalid/2.jpg',
+                    metadata={'fallback_source_urls': ['https://images.example.invalid/2-fallback.jpg']},
+                ),
+            ],
+        )],
+    )
+    assert inserted_photos == {'photo-carousel'}
+    photo_post_id = await database.pool.fetchval(
+        """select id from archived_posts
+           where archived_profile_id=$1 and platform_post_id='photo-carousel'""",
+        profile,
+    )
+    photo_object_id = await database.pool.fetchval(
+        """insert into stored_objects(sha256,storage_key,size_bytes,content_type)
+           values('e' || repeat('0',63),'full-sync-retained-photo',742,'image/jpeg') returning id""",
+    )
+    await database.pool.execute(
+        """update archived_post_media_assets set stored_object_id=$2
+           where archived_post_id=$1 and position=1""",
+        photo_post_id, photo_object_id,
+    )
+    refreshed_photos = await repo.insert_archived_posts_if_missing(
+        owner,
+        profile,
+        [ArchivedPost(
+            platform_post_id='photo-carousel',
+            original_url='https://www.tiktok.com/@creator/photo/photo-carousel',
+            media_type='carousel',
+            assets=[
+                # A scan can report a changed order. Position 1 already has
+                # immutable archive bytes, so its old scanner hints must win.
+                ArchiveMediaAsset(
+                    0, 'photo', 'https://images.example.invalid/1-refresh.jpg',
+                    metadata={'fallback_source_urls': ['https://images.example.invalid/1-refresh-fallback.jpg']},
+                ),
+                ArchiveMediaAsset(
+                    1, 'photo', 'https://images.example.invalid/0-refresh.jpg',
+                    metadata={'fallback_source_urls': ['https://images.example.invalid/0-refresh-fallback.jpg']},
+                ),
+                ArchiveMediaAsset(
+                    2, 'photo', 'https://images.example.invalid/2-refresh.jpg',
+                    metadata={'fallback_source_urls': ['https://images.example.invalid/2-refresh-fallback.jpg']},
+                ),
+                ArchiveMediaAsset(
+                    3, 'photo', 'https://images.example.invalid/3-refresh.jpg',
+                    metadata={'fallback_source_urls': ['https://images.example.invalid/3-refresh-fallback.jpg']},
+                ),
+            ],
+        )],
+    )
+    assert refreshed_photos == set()
+    photo_assets = await database.pool.fetch(
+        """select position,source_url,metadata,stored_object_id from archived_post_media_assets
+           where archived_post_id=$1 order by position""",
+        photo_post_id,
+    )
+    assert [(row['position'], row['source_url'], row['metadata'], row['stored_object_id']) for row in photo_assets] == [
+        (0, 'https://images.example.invalid/1-refresh.jpg', {'fallback_source_urls': ['https://images.example.invalid/1-refresh-fallback.jpg']}, None),
+        (1, 'https://images.example.invalid/1.jpg', {'fallback_source_urls': ['https://images.example.invalid/1-fallback.jpg']}, photo_object_id),
+        (2, 'https://images.example.invalid/2-refresh.jpg', {'fallback_source_urls': ['https://images.example.invalid/2-refresh-fallback.jpg']}, None),
+        (3, 'https://images.example.invalid/3-refresh.jpg', {'fallback_source_urls': ['https://images.example.invalid/3-refresh-fallback.jpg']}, None),
+    ]
+
+    # Rich post refreshes share the same asset write path, so they must retain
+    # attached photo metadata too while still refreshing unattached positions.
+    _, photo_created = await repo.upsert_archived_post(
+        owner,
+        profile,
+        ArchivedPost(
+            platform_post_id='photo-carousel',
+            original_url='https://www.tiktok.com/@creator/photo/photo-carousel',
+            media_type='carousel',
+            assets=[
+                ArchiveMediaAsset(0, 'photo', 'https://images.example.invalid/0-rich.jpg'),
+                ArchiveMediaAsset(1, 'photo', 'https://images.example.invalid/1-rich.jpg'),
+                ArchiveMediaAsset(2, 'photo', 'https://images.example.invalid/2-rich.jpg'),
+                ArchiveMediaAsset(3, 'photo', 'https://images.example.invalid/3-rich.jpg'),
+            ],
+        ),
+    )
+    assert photo_created is False
+    refreshed_again = await database.pool.fetch(
+        """select position,source_url,stored_object_id from archived_post_media_assets
+           where archived_post_id=$1 order by position""",
+        photo_post_id,
+    )
+    assert [(row['position'], row['source_url'], row['stored_object_id']) for row in refreshed_again] == [
+        (0, 'https://images.example.invalid/0-rich.jpg', None),
+        (1, 'https://images.example.invalid/1.jpg', photo_object_id),
+        (2, 'https://images.example.invalid/2-rich.jpg', None),
+        (3, 'https://images.example.invalid/3-rich.jpg', None),
+    ]
+    posts = await repo.list_owned_archived_profile_posts(owner, profile, limit=200)
+    assert next(row for row in posts if row['platform_post_id'] == 'photo-carousel')['has_archived_media'] is True
 
     first, second = await asyncio.gather(
         repo.create_owned_profile_full_sync_job(owner, 1, profile, queue_name=queue.queue_name),
