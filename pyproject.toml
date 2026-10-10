@@ -23,6 +23,7 @@ dependencies = [
   "fastapi>=0.116,<1",
   "uvicorn[standard]>=0.35,<1",
   "yt-dlp>=2026.8.19,<2027",
+  "Pillow>=12.2,<13",
   "tt-dlp @ https://github.com/bajaam/tt-dlp/archive/08a1f42abf11ff3c969e0af323644bb6fbcc7cf7.tar.gz"
 ]
 

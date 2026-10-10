@@ -20,7 +20,8 @@ class ProfileArchiveMediaService:
             settings.r2_presign_seconds,
         )
 
-    async def persist(self, *, user_id, profile_id, asset_id, downloaded, suffix=".mp4"):
+    async def persist(self, *, user_id, profile_id, asset_id, downloaded, suffix=None):
+        suffix = suffix or _suffix_for_content_type(downloaded.content_type)
         try:
             existing = await self.repo.get_stored_object_by_sha(downloaded.sha256)
         except Exception:
@@ -39,6 +40,11 @@ class ProfileArchiveMediaService:
                     downloaded.sha256, key, downloaded.size_bytes, downloaded.content_type,
                 )
             except Exception:
+                # Do not delete here. A separate concurrent writer can claim
+                # this deterministic, content-addressed object between upload
+                # and a non-atomic lookup. Retrying this SHA safely rewrites
+                # the same private key; durable orphan cleanup belongs to a
+                # reconciler that can prove an object has no references.
                 raise SourceUnavailable("profile media storage record failed") from None
         try:
             attached = await self.repo.attach_owned_archived_post_media_object(
@@ -49,3 +55,11 @@ class ProfileArchiveMediaService:
         if not attached:
             raise SourceUnavailable("profile media storage attachment failed")
         return reused
+
+
+def _suffix_for_content_type(content_type):
+    return {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+    }.get(content_type, ".mp4")

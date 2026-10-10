@@ -36,7 +36,11 @@
 - [x] Add worker-owned, SHA-256-deduplicated private R2 persistence and authorized playback for profile archive videos, with real-Postgres UUID queue binding coverage and native no-cookie yt-dlp concrete-post acquisition.
 - [x] Complete the one-video TikTok profile-media persistence/playback/idempotency acceptance using `docs/profile-archive-media-canary.md`; one of 12 benchmark posts now has private persisted video and the other 11 remain intentionally unprocessed.
 - [x] Preserve ordered TikTok photo/carousel candidate metadata and provider-neutral `photo` asset rows during import and sync; no image bytes are downloaded or exposed to browsers.
-- [ ] Extend the worker-owned profile-media path to validate, persist, deduplicate, and privately serve bounded TikTok photo/carousel assets; preserve partial carousel progress and do not alter video behavior. Define durable upstream-image identity/reorder reconciliation before changing attached asset positions.
+- [x] Extend the worker-owned profile-media path to validate, persist, deduplicate, and privately store bounded TikTok photo/carousel assets; preserve partial carousel progress and do not alter video behavior. Attached positions remain preservation-first on upstream reorders.
+- [ ] Run one bounded hosted photo/carousel persistence acceptance, then add tenant-authorized image playback/viewer API and frontend rendering without exposing candidate or storage URLs.
+- [ ] Add a durable private-object reconciliation workflow for uploads that complete
+  before their `stored_objects` record can commit; it must prove no durable reference
+  before deletion.
 - [x] Reuse the bounded profile-media worker path to back up all eligible imported TikTok videos while skipping already persisted assets.
 - [x] Add tenant-authorized attachment download links for already archived profile videos; frontend Save control remains pending.
 - [x] Add tenant-authorized Telegram prepared-message creation for an already archived TikTok MP4; frontend native-share control and hosted Telegram acceptance remain pending.
