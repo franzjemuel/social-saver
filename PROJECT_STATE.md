@@ -153,6 +153,21 @@ Updated for v3.8.
   hop before connecting; the metadata scanner rejects non-HTTPS, local, private, and
   malformed literal-host candidates but performs no network acquisition itself.
 
+## TikTok photo/carousel private persistence — 2026-10-10
+
+- The worker can now process unpersisted ordered `photo` asset rows through the
+  existing tenant-owned profile-media queue. It uses a dedicated no-cookie HTTPS
+  downloader with public-IP DNS resolution/pinning, per-redirect validation,
+  bounded candidate fallback, byte-size/time limits, and JPEG/PNG/WebP byte
+  validation before SHA-256-deduplicated private R2 persistence.
+- Carousel positions are processed independently. Existing attachments are skipped;
+  a failed position remains unarchived and is selected on a later retry, while already
+  persisted positions remain intact. Browser projections still expose only the
+  aggregate `has_archived_media` state, never candidate or storage URLs.
+- This is offline-tested implementation evidence only. No real photo/carousel hosted
+  acquisition, R2 persistence, image playback, or frontend rendering acceptance has
+  been performed in this increment.
+
 ## Manual TikTok profile sync — 2026-10-06
 
 - Added a worker-owned, tenant-scoped manual sync queue and safe status projection.

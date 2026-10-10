@@ -651,7 +651,7 @@ class Repository:
     async def create_owned_profile_media_job(self, user_id, chat_id, profile_id, post_id=None, *, queue_name=None):
         """Create one active owned media job, coalescing duplicate requests.
 
-        A bulk job covers its profile's unpersisted video assets, so a targeted
+        A bulk job covers its profile's unpersisted media assets, so a targeted
         request joins an active bulk job rather than initiating a duplicate
         acquisition. The transaction-scoped lock makes that decision atomic.
         """
@@ -673,7 +673,7 @@ class Repository:
                                join archived_post_media_assets asset on asset.archived_post_id=post.id
                                where post.id=requested_media.post_id
                                  and post.archived_profile_id=requested_media.profile_id
-                                 and post.media_type='video' and asset.asset_type='video'))
+                                 and asset.asset_type in ('video','photo')))
                        ), active_job as (
                          select job.id
                          from jobs job join owned_request requested on true
@@ -726,6 +726,26 @@ class Repository:
                join archived_profiles profile on profile.id=post.archived_profile_id
                where profile.id=$1 and profile.user_id=$2 and profile.platform='tiktok'
                  and post.media_type='video' and asset.asset_type='video'
+                 and asset.stored_object_id is null
+                 and ($3::uuid is null or post.id=$3)
+               order by post.published_at desc nulls last, post.id, asset.position""",
+            profile_id, user_id, post_id,
+        )
+
+    async def list_owned_archived_media_assets(self, user_id, profile_id, post_id=None):
+        """Return unpersisted internal worker candidates for owned video/photo assets.
+
+        ``source_url`` and fallback candidates are intentionally selected only at
+        this worker repository boundary; no browser projection calls this query.
+        """
+        return await self.pool.fetch(
+            """select asset.id, asset.asset_type, asset.source_url, asset.metadata,
+                      post.original_url, post.id as post_id
+               from archived_post_media_assets asset
+               join archived_posts post on post.id=asset.archived_post_id
+               join archived_profiles profile on profile.id=post.archived_profile_id
+               where profile.id=$1 and profile.user_id=$2 and profile.platform='tiktok'
+                 and asset.asset_type in ('video','photo')
                  and asset.stored_object_id is null
                  and ($3::uuid is null or post.id=$3)
                order by post.published_at desc nulls last, post.id, asset.position""",

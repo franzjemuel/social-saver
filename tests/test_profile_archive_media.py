@@ -28,6 +28,8 @@ class Repo:
         return {"media_type": "video", "storage_key": "private/key"} if self.owned else None
     async def list_owned_archived_video_assets(self, user, profile, post_id=None):
         return [{"id": ASSET, "asset_type": "video", "original_url": "https://www.tiktok.com/@a/video/1"}, {"id": UUID("55555555-5555-5555-5555-555555555555"), "asset_type": "photo", "original_url": "https://www.tiktok.com/@a/photo/2"}]
+    async def list_owned_archived_media_assets(self, user, profile, post_id=None):
+        return await self.list_owned_archived_video_assets(user, profile, post_id)
     async def get_stored_object_by_sha(self, sha): return self.stored
     async def create_stored_object(self, *args): self.calls.append(("create", args)); return UUID("66666666-6666-6666-6666-666666666666")
     async def attach_owned_archived_post_media_object(self, *args): self.calls.append(("attach", args)); return ASSET
@@ -89,8 +91,10 @@ async def test_worker_persists_video_reuses_sha_and_skips_photo(tmp_path):
         async def download_post(self, url, path): return downloaded
     class Service:
         async def persist(self, **kwargs): return False
-    result = await process_archive_profile_media({"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, Repo(), Downloader(), Service())
-    assert result == {"profile_id": str(PROFILE), "post_id": None, "attached": 1, "uploaded": 1, "reused": 0, "skipped": 1, "failures": 0, "total_eligible": 1, "completed": 1}
+    class Images:
+        async def download_asset(self, *_): raise AssertionError("photo candidates missing")
+    result = await process_archive_profile_media({"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, Repo(), Downloader(), Service(), Images())
+    assert result == {"profile_id": str(PROFILE), "post_id": None, "attached": 1, "uploaded": 1, "reused": 0, "skipped": 0, "failures": 1, "total_eligible": 2, "completed": 2}
     storage = SimpleNamespace(put_file=None)
     uploads = []
     async def put(path, key, content): uploads.append((path, key)); return None
@@ -145,7 +149,7 @@ async def test_single_post_route_and_worker_never_fall_through(monkeypatch):
     response = await api.archive_profile_post_media(str(PROFILE), str(POST), identity={"app_user_id": "tenant", "telegram_user_id": 1})
     assert response.status == "queued" and repo.calls[-1] == ("tenant", 1, PROFILE, POST)
     class TargetedRepo(Repo):
-        async def list_owned_archived_video_assets(self, user, profile, post_id=None):
+        async def list_owned_archived_media_assets(self, user, profile, post_id=None):
             assert post_id == POST
             return []  # persisted target is an idempotent no-op
     result = await process_archive_profile_media({"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}}, TargetedRepo())
@@ -197,7 +201,7 @@ async def test_bulk_profile_media_continues_after_one_video_failure(tmp_path):
     second_asset = UUID("88888888-8888-8888-8888-888888888888")
 
     class BulkRepo(Repo):
-        async def list_owned_archived_video_assets(self, user, profile, post_id=None):
+        async def list_owned_archived_media_assets(self, user, profile, post_id=None):
             assert post_id is None
             return [
                 {"id": ASSET, "asset_type": "video", "original_url": "https://provider.invalid/first"},
@@ -224,6 +228,80 @@ async def test_bulk_profile_media_continues_after_one_video_failure(tmp_path):
     assert result["completed"] == 2
     assert result["reused"] == result["skipped"] == 0
     assert result["failures"] == 1
+
+
+@pytest.mark.asyncio
+async def test_photo_carousel_persists_ordered_assets_and_retries_only_missing(tmp_path):
+    first = UUID("99999999-9999-9999-9999-999999999999")
+    second = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    third = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    pending = [
+        {"id": first, "position": 0, "asset_type": "photo", "source_url": "https://images.invalid/0", "metadata": {"fallback_source_urls": ["https://images.invalid/0-alt"]}},
+        {"id": second, "position": 1, "asset_type": "photo", "source_url": "https://images.invalid/1", "metadata": {}},
+        {"id": third, "position": 2, "asset_type": "photo", "source_url": "https://images.invalid/2", "metadata": {}},
+    ]
+
+    class PhotoRepo(Repo):
+        async def list_owned_archived_media_assets(self, _, __, post_id=None):
+            assert post_id == POST
+            return list(pending)
+
+    attempted = []
+    class Images:
+        async def download_asset(self, candidates, path):
+            attempted.append(candidates)
+            if candidates[0].endswith("/1"):
+                raise SourceUnavailable("TikTok image download failed")
+            path.write_bytes(b"image" + candidates[0].encode())
+            return DownloadedAsset(path, path.stat().st_size, "e" * 64, "image/jpeg")
+
+    attached = []
+    class Service:
+        async def persist(self, **kwargs):
+            attached.append(kwargs["asset_id"])
+            return kwargs["asset_id"] == third
+
+    with pytest.raises(SourceUnavailable, match="TikTok image download failed"):
+        await process_archive_profile_media(
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}},
+            PhotoRepo(), media_service=Service(), image_downloader=Images(),
+        )
+    assert attached == [first, third]
+    assert attempted[0] == ("https://images.invalid/0", "https://images.invalid/0-alt")
+    assert [asset["position"] for asset in pending] == [0, 1, 2]
+
+    pending[:] = [pending[1]]  # durable attachments are not selected again.
+    class RetryImages:
+        async def download_asset(self, candidates, path):
+            path.write_bytes(b"recovered")
+            return DownloadedAsset(path, 9, "f" * 64, "image/jpeg")
+    result = await process_archive_profile_media(
+        {"id": "retry", "user_id": "tenant", "input": {"profile_id": PROFILE, "post_id": POST}},
+        PhotoRepo(), media_service=Service(), image_downloader=RetryImages(),
+    )
+    assert result["attached"] == result["uploaded"] == 1
+    assert result["failures"] == 0
+
+
+@pytest.mark.asyncio
+async def test_storage_record_failure_cleans_unclaimed_uploaded_image(tmp_path):
+    image = tmp_path / "image.jpg"; image.write_bytes(b"image")
+    downloaded = DownloadedAsset(image, 5, "1" * 64, "image/jpeg")
+    deleted = []
+
+    class RecordFailure(Repo):
+        async def create_stored_object(self, *_): raise RuntimeError("private failure")
+        async def get_stored_object_by_sha(self, _): return None
+
+    class Storage:
+        async def put_file(self, *_): pass
+        async def delete(self, key): deleted.append(key)
+
+    with pytest.raises(SourceUnavailable, match="profile media storage record failed"):
+        await ProfileArchiveMediaService(RecordFailure(), Storage()).persist(
+            user_id="tenant", profile_id=PROFILE, asset_id=ASSET, downloaded=downloaded,
+        )
+    assert len(deleted) == 1 and deleted[0].startswith("archive/")
 
 
 @pytest.mark.asyncio

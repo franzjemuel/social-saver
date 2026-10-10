@@ -348,13 +348,27 @@ async def test_profile_media_playback_and_acquisition_are_tenant_scoped(database
         """insert into archived_post_media_assets(archived_post_id,position,asset_type,stored_object_id)
            values($1,-1,'photo',$2)""", post, photo_object_id,
     )
+    photo_asset = await database.pool.fetchval(
+        """insert into archived_post_media_assets(archived_post_id,position,asset_type,source_url,metadata)
+           values($1,1,'photo','https://images.example.invalid/pending.jpg',
+                  '{"fallback_source_urls":["https://images.example.invalid/pending-alt.jpg"]}'::jsonb)
+           returning id""",
+        post,
+    )
     owned_playback = await repo.get_owned_archived_post_playback(owner, profile, post)
     assert owned_playback['media_type'] == 'video'
     assert owned_playback['storage_key'] == 'private-object'
     assert owned_playback['thumbnail_url'] == 'https://thumbnail.invalid/playback.jpg'
     assert await repo.get_owned_archived_post_playback(other, profile, post) is None
     assert await repo.list_owned_archived_video_assets(other, profile, post) == []
+    assert await repo.list_owned_archived_media_assets(other, profile, post) == []
     assert await repo.create_owned_profile_media_job(other, 2, profile, post) is None
+    image_job = await repo.create_owned_profile_media_job(owner, 1, profile, post)
+    assert image_job is not None and image_job.created is True
+    images = await repo.list_owned_archived_media_assets(owner, profile, post)
+    assert len(images) == 1 and images[0]["id"] == photo_asset
+    assert images[0]["asset_type"] == "photo"
+    assert images[0]["metadata"] == {"fallback_source_urls": ["https://images.example.invalid/pending-alt.jpg"]}
     await database.pool.execute('update stored_objects set deleted_at=now() where id=$1', object_id)
     deleted_playback = await repo.get_owned_archived_post_playback(owner, profile, post)
     assert deleted_playback is not None and deleted_playback['storage_key'] is None
