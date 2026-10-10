@@ -477,10 +477,28 @@ class Repository:
                       exists(select 1 from archived_post_media_assets asset
                              join stored_objects object on object.id=asset.stored_object_id
                              where asset.archived_post_id=post.id and object.deleted_at is null) as has_archived_media,
+                      coalesce(photo_assets.total_photo_assets, 0)::int as total_photo_assets,
+                      coalesce(photo_assets.persisted_photo_assets, 0)::int as persisted_photo_assets,
+                      (coalesce(photo_assets.total_photo_assets, 0)
+                       - coalesce(photo_assets.persisted_photo_assets, 0))::int as pending_photo_assets,
+                      case
+                        when coalesce(photo_assets.total_photo_assets, 0) = 0 then null
+                        when coalesce(photo_assets.persisted_photo_assets, 0) = 0 then 'not_started'
+                        when photo_assets.persisted_photo_assets = photo_assets.total_photo_assets then 'complete'
+                        else 'partial'
+                      end as photo_backup_status,
                       engagement.observed_at as engagement_observed_at,
                       engagement.view_count, engagement.like_count, engagement.comment_count,
                       engagement.repost_count, engagement.share_count, engagement.save_count
                from archived_posts post
+               left join lateral (
+                 select count(*)::int as total_photo_assets,
+                        count(object.id)::int as persisted_photo_assets
+                 from archived_post_media_assets asset
+                 left join stored_objects object on object.id=asset.stored_object_id
+                    and object.deleted_at is null
+                 where asset.archived_post_id=post.id and asset.asset_type='photo'
+               ) photo_assets on true
                left join lateral (
                  select observed_at, view_count, like_count, comment_count,
                         repost_count, share_count, save_count
@@ -776,6 +794,63 @@ class Repository:
                where profile.id=$1 and profile.user_id=$2 and post.id=$3
                order by asset.position nulls last limit 1""",
             profile_id, user_id, post_id,
+        )
+
+    async def list_owned_archived_post_photo_assets(self, user_id, profile_id, post_id, *, limit=50, offset=0):
+        """Return safe, ordered photo asset state only for one tenant-owned post.
+
+        This deliberately omits source/fallback URLs, object IDs, hashes, and
+        storage keys. ``None`` uses the same foreign-or-missing boundary as the
+        rest of the profile archive API; an empty list is an owned non-photo post.
+        """
+        owned = await self.pool.fetchval(
+            """select post.id
+               from archived_posts post
+               join archived_profiles profile on profile.id=post.archived_profile_id
+               where profile.id=$1::uuid and profile.user_id=$2 and post.id=$3::uuid""",
+            profile_id, user_id, post_id,
+        )
+        if owned is None:
+            return None
+        return await self.pool.fetch(
+            """select asset.position,
+                      case
+                        when asset.stored_object_id is null then 'pending'
+                        when object.id is null then 'unavailable'
+                        else 'available'
+                      end as state,
+                      object.content_type
+               from archived_post_media_assets asset
+               left join stored_objects object on object.id=asset.stored_object_id
+                  and object.deleted_at is null
+               where asset.archived_post_id=$1::uuid and asset.asset_type='photo'
+               order by asset.position asc
+               limit $2 offset $3""",
+            post_id, limit, offset,
+        )
+
+    async def get_owned_archived_post_photo_asset(self, user_id, profile_id, post_id, position):
+        """Return an authorized internal signing target for one photo position.
+
+        A missing position is represented safely for an owned post. Foreign and
+        nonexistent posts return ``None`` so callers cannot infer ownership.
+        """
+        return await self.pool.fetchrow(
+            """select case
+                        when asset.id is null then 'missing'
+                        when asset.stored_object_id is null then 'pending'
+                        when object.id is null then 'unavailable'
+                        else 'available'
+                      end as state,
+                      object.storage_key, object.content_type
+               from archived_posts post
+               join archived_profiles profile on profile.id=post.archived_profile_id
+               left join archived_post_media_assets asset on asset.archived_post_id=post.id
+                    and asset.asset_type='photo' and asset.position=$4::integer
+               left join stored_objects object on object.id=asset.stored_object_id
+                    and object.deleted_at is null
+               where profile.id=$1::uuid and profile.user_id=$2 and post.id=$3::uuid""",
+            profile_id, user_id, post_id, position,
         )
 
     async def update_asset_storage(self, media_item_id, position, *, size_bytes, sha256, storage_provider=None, storage_key=None):

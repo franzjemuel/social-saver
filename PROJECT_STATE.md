@@ -173,6 +173,19 @@ Updated for v3.8.
   acquisition, R2 persistence, image playback, or frontend rendering acceptance has
   been performed in this increment.
 
+## TikTok photo/carousel private playback status — 2026-10-10
+
+- Archive post projections now expose safe counts for ordered photo assets
+  (`total`, `persisted`, and `pending`) plus a derived not-started/partial/complete
+  state. These values are derived from durable asset rows and non-deleted stored
+  objects, not from a post's declared media type.
+- An authenticated owner can list safe, ordered photo-position state and request a
+  short-lived private R2 read URL only for one persisted position. The API never
+  projects acquisition candidates, storage keys, object IDs, hashes, or URLs for
+  pending/deleted positions; signing responses are private/no-store.
+- This backend contract does not add a frontend image viewer, browser-triggered
+  acquisition, or hosted photo playback acceptance.
+
 ## Manual TikTok profile sync — 2026-10-06
 
 - Added a worker-owned, tenant-scoped manual sync queue and safe status projection.

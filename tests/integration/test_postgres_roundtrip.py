@@ -1,6 +1,7 @@
 """Real database/worker tests; opt in only with the disposable runner's DSN."""
 import asyncio
 from contextlib import AsyncExitStack
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -372,6 +373,89 @@ async def test_profile_media_playback_and_acquisition_are_tenant_scoped(database
     await database.pool.execute('update stored_objects set deleted_at=now() where id=$1', object_id)
     deleted_playback = await repo.get_owned_archived_post_playback(owner, profile, post)
     assert deleted_playback is not None and deleted_playback['storage_key'] is None
+
+
+async def test_profile_photo_asset_status_and_playback_targets_are_tenant_scoped(database):
+    """Exercise ordered 0/N, partial, complete, pending, and deleted-photo state."""
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','photo-status-account','owner') returning id""",
+        owner,
+    )
+    post = await database.pool.fetchval(
+        """insert into archived_posts(archived_profile_id,platform_post_id,original_url,media_type)
+           values($1,'photo-status-post','https://www.tiktok.com/@owner/photo/photo-status-post','carousel')
+           returning id""",
+        profile,
+    )
+    # The integration database is shared across this module. Derive fixture
+    # hashes from test-specific labels instead of reusing short synthetic
+    # prefixes used by adjacent tests under the global SHA uniqueness rule.
+    available_sha = hashlib.sha256(b'profile-photo-status-available-v1').hexdigest()
+    deleted_sha = hashlib.sha256(b'profile-photo-status-deleted-v1').hexdigest()
+    available_object = await database.pool.fetchval(
+        """insert into stored_objects(sha256,storage_key,size_bytes,content_type)
+           values($1,'private-photo-available',1,'image/jpeg') returning id""",
+        available_sha,
+    )
+    deleted_object = await database.pool.fetchval(
+        """insert into stored_objects(sha256,storage_key,size_bytes,content_type,deleted_at)
+           values($1,'private-photo-deleted',1,'image/jpeg',now()) returning id""",
+        deleted_sha,
+    )
+    for position in (0, 1, 2):
+        await database.pool.execute(
+            """insert into archived_post_media_assets(archived_post_id,position,asset_type,stored_object_id)
+               values($1,$2,'photo',$3)""",
+            post, position, None,
+        )
+
+    projected = await repo.list_owned_archived_profile_posts(owner, profile, limit=10, offset=0)
+    photo = next(row for row in projected if row['id'] == post)
+    assert (photo['total_photo_assets'], photo['persisted_photo_assets'], photo['pending_photo_assets']) == (3, 0, 3)
+    assert photo['photo_backup_status'] == 'not_started'
+
+    await database.pool.execute(
+        """update archived_post_media_assets set stored_object_id=$2
+           where archived_post_id=$1 and position=1""",
+        post, available_object,
+    )
+    await database.pool.execute(
+        """update archived_post_media_assets set stored_object_id=$2
+           where archived_post_id=$1 and position=2""",
+        post, deleted_object,
+    )
+
+    rows = await repo.list_owned_archived_post_photo_assets(owner, profile, post)
+    assert [(row['position'], row['state'], row['content_type']) for row in rows] == [
+        (0, 'pending', None), (1, 'available', 'image/jpeg'), (2, 'unavailable', None),
+    ]
+    assert await repo.list_owned_archived_post_photo_assets(other, profile, post) is None
+    available = await repo.get_owned_archived_post_photo_asset(owner, profile, post, 1)
+    assert available['state'] == 'available'
+    assert available['storage_key'] == 'private-photo-available'
+    assert (await repo.get_owned_archived_post_photo_asset(owner, profile, post, 0))['state'] == 'pending'
+    assert (await repo.get_owned_archived_post_photo_asset(owner, profile, post, 2))['state'] == 'unavailable'
+    assert (await repo.get_owned_archived_post_photo_asset(owner, profile, post, 9))['state'] == 'missing'
+    assert await repo.get_owned_archived_post_photo_asset(other, profile, post, 1) is None
+
+    projected = await repo.list_owned_archived_profile_posts(owner, profile, limit=10, offset=0)
+    photo = next(row for row in projected if row['id'] == post)
+    assert (photo['total_photo_assets'], photo['persisted_photo_assets'], photo['pending_photo_assets']) == (3, 1, 2)
+    assert photo['photo_backup_status'] == 'partial'
+
+    await database.pool.execute(
+        """update archived_post_media_assets set stored_object_id=$2
+           where archived_post_id=$1 and position in (0,2)""",
+        post, available_object,
+    )
+    projected = await repo.list_owned_archived_profile_posts(owner, profile, limit=10, offset=0)
+    photo = next(row for row in projected if row['id'] == post)
+    assert (photo['total_photo_assets'], photo['persisted_photo_assets'], photo['pending_photo_assets']) == (3, 3, 0)
+    assert photo['photo_backup_status'] == 'complete'
 
 
 async def test_profile_sync_jobs_and_presence_reconciliation_are_tenant_safe(database):
