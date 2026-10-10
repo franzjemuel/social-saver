@@ -37,7 +37,7 @@
 - [x] Complete the one-video TikTok profile-media persistence/playback/idempotency acceptance using `docs/profile-archive-media-canary.md`; one of 12 benchmark posts now has private persisted video and the other 11 remain intentionally unprocessed.
 - [x] Preserve ordered TikTok photo/carousel candidate metadata and provider-neutral `photo` asset rows during import and sync; no image bytes are downloaded or exposed to browsers.
 - [x] Extend the worker-owned profile-media path to validate, persist, deduplicate, and privately store bounded TikTok photo/carousel assets; preserve partial carousel progress and do not alter video behavior. Attached positions remain preservation-first on upstream reorders.
-- [ ] Run one bounded hosted photo/carousel persistence acceptance, then add tenant-authorized image playback/viewer API and frontend rendering without exposing candidate or storage URLs.
+- [ ] Run one bounded hosted photo/carousel persistence and private per-position playback acceptance, then add frontend image/carousel rendering without exposing candidate or storage URLs.
 - [ ] Add a durable private-object reconciliation workflow for uploads that complete
   before their `stored_objects` record can commit; it must prove no durable reference
   before deletion.
