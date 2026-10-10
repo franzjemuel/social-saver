@@ -2,11 +2,13 @@
 
 ## P0 launch blockers
 - [x] Create persistent GitHub repository (`franzjemuel/social-saver`).
-- [ ] Provision staging Telegram bot/token.
-- [ ] Provision Postgres/Supabase + PGMQ.
+- [x] Identify staging test bot: @socialsaverapp_bot (user confirmed).
+- [ ] Configure and validate staging Telegram token in service secret stores.
+- [x] Provision staging Supabase + PGMQ; verified hosted 2026-09-30.
 - [ ] Provision private R2 + least-privilege API/worker credentials.
 - [ ] Provision Railway bot/API/worker. Config-as-code is ready in v3.7; external project/service creation remains.
-- [ ] Apply migrations and pass staging canary.
+- [x] Apply migrations 001–020 and verify remote history.
+- [ ] Pass full hosted staging canary.
 - [ ] Complete real Reel -> queue -> worker -> Telegram test.
 - [x] Configure worker-only Apify token and complete `/stories` -> worker -> Telegram acceptance test.
 - [ ] Deploy and prove Apify-backed `/watchstories` automatic delivery for one new Story.
@@ -59,8 +61,9 @@
 - [x] Replace stale auth function-name assertion with actual route dependency checks.
 - [x] Consolidate CI and add installed-wheel/container import verification.
 - [x] Implement isolated staging canary and probe cleanup on a review branch.
-- [ ] Merge canary isolation after review and validate against hosted PGMQ/R2.
-- [ ] Verify/fix Postgres JSON codecs with real database round-trip tests.
+- [x] Merge canary isolation (PR #2).
+- [ ] Validate canary against hosted PGMQ/R2.
+- [x] Verify/fix Postgres JSON codecs with real database round-trip tests.
 - [ ] Confirm hosted staging identifiers and secrets via hosting secret stores.
 - [ ] Pin a tested dependency resolution for repeatable staging releases.
 
@@ -73,8 +76,14 @@
 - [x] Apply user-approved migration 011 correction: replace two constraint-index
   drops with ALTER TABLE DROP CONSTRAINT. Local verification passed; actual
   database replay still requires a passing integration run.
-- [ ] Pass the real integration gate (run 36576459256 failed at migration 011),
-  prove the queue/worker round trip, and review stacked PR #4 after PR #2.
+- [x] Pass real integration gate and queue/worker test-job round trip; PR #4
+  merged as dacf421 with green main run 36665893782.
+- [ ] Require integration in main branch protection before staging release.
+- [x] Confirm unintended Railway sandbox is Destroyed (zero active sandboxes).
+- [x] Establish private Railway project social-saver-staging and staging environment.
+- [x] Pause duplicate engineering automation with user approval.
+- [x] User created healthy Supabase project mnwlqeeksruyuvqowrdq.
+- [x] Verify hosted connectivity, migrations and PGMQ.
 - [ ] Complete hosted service provisioning and the authorized Reel acceptance test.
 
 ## Hosted Reel follow-up — 2026-09-30
