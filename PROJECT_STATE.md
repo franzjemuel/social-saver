@@ -145,6 +145,10 @@ Updated for v3.8.
 - Candidate URLs are worker-only acquisition hints: browser/API projections still
   exclude asset source URLs and fallback candidates. This increment does not download
   images, write R2 objects, mint image playback URLs, or change existing video paths.
+- A scanner refresh may update only an unattached asset position. Once a position has
+  private archived bytes, its scanner metadata remains immutable so changed upstream
+  candidate ordering cannot reinterpret the retained object. A future image-persistence
+  increment should add a durable upstream image identity if it must reconcile reorders.
 - Future image acquisition must validate resolved public addresses and every redirect
   hop before connecting; the metadata scanner rejects non-HTTPS, local, private, and
   malformed literal-host candidates but performs no network acquisition itself.

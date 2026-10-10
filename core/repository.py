@@ -387,7 +387,8 @@ class Repository:
                              asset_type=excluded.asset_type, source_url=excluded.source_url,
                              thumbnail_url=excluded.thumbnail_url,
                              duration_seconds=excluded.duration_seconds, width=excluded.width,
-                             height=excluded.height, metadata=excluded.metadata""",
+                             height=excluded.height, metadata=excluded.metadata
+                           where archived_post_media_assets.stored_object_id is null""",
                         post_id, asset.position, asset.asset_type, asset.source_url,
                         asset.thumbnail_url, asset.duration_seconds, asset.width,
                         asset.height, asset.metadata,
@@ -548,7 +549,8 @@ class Repository:
                                  asset_type=excluded.asset_type, source_url=excluded.source_url,
                                  thumbnail_url=excluded.thumbnail_url,
                                  duration_seconds=excluded.duration_seconds, width=excluded.width,
-                                 height=excluded.height, metadata=excluded.metadata""",
+                                 height=excluded.height, metadata=excluded.metadata
+                               where archived_post_media_assets.stored_object_id is null""",
                             post_id, asset.position, asset.asset_type, asset.source_url,
                             asset.thumbnail_url, asset.duration_seconds, asset.width,
                             asset.height, asset.metadata,
