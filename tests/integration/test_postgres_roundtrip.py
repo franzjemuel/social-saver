@@ -1,6 +1,7 @@
 """Real database/worker tests; opt in only with the disposable runner's DSN."""
 import asyncio
 from contextlib import AsyncExitStack
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -390,13 +391,20 @@ async def test_profile_photo_asset_status_and_playback_targets_are_tenant_scoped
            returning id""",
         profile,
     )
+    # The integration database is shared across this module. Derive fixture
+    # hashes from test-specific labels instead of reusing short synthetic
+    # prefixes used by adjacent tests under the global SHA uniqueness rule.
+    available_sha = hashlib.sha256(b'profile-photo-status-available-v1').hexdigest()
+    deleted_sha = hashlib.sha256(b'profile-photo-status-deleted-v1').hexdigest()
     available_object = await database.pool.fetchval(
         """insert into stored_objects(sha256,storage_key,size_bytes,content_type)
-           values('c' || repeat('0',63),'private-photo-available',1,'image/jpeg') returning id""",
+           values($1,'private-photo-available',1,'image/jpeg') returning id""",
+        available_sha,
     )
     deleted_object = await database.pool.fetchval(
         """insert into stored_objects(sha256,storage_key,size_bytes,content_type,deleted_at)
-           values('d' || repeat('0',63),'private-photo-deleted',1,'image/jpeg',now()) returning id""",
+           values($1,'private-photo-deleted',1,'image/jpeg',now()) returning id""",
+        deleted_sha,
     )
     for position in (0, 1, 2):
         await database.pool.execute(

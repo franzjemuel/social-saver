@@ -796,7 +796,7 @@ class Repository:
             profile_id, user_id, post_id,
         )
 
-    async def list_owned_archived_post_photo_assets(self, user_id, profile_id, post_id):
+    async def list_owned_archived_post_photo_assets(self, user_id, profile_id, post_id, *, limit=50, offset=0):
         """Return safe, ordered photo asset state only for one tenant-owned post.
 
         This deliberately omits source/fallback URLs, object IDs, hashes, and
@@ -824,8 +824,9 @@ class Repository:
                left join stored_objects object on object.id=asset.stored_object_id
                   and object.deleted_at is null
                where asset.archived_post_id=$1::uuid and asset.asset_type='photo'
-               order by asset.position asc""",
-            post_id,
+               order by asset.position asc
+               limit $2 offset $3""",
+            post_id, limit, offset,
         )
 
     async def get_owned_archived_post_photo_asset(self, user_id, profile_id, post_id, position):

@@ -14,7 +14,7 @@ from uuid import UUID
 
 from aiogram import Bot
 from aiogram.types import InlineQueryResultVideo
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Path as PathParam, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
@@ -208,6 +208,8 @@ class ProfilePhotoAssetStatus(BaseModel):
 
 class ProfilePhotoAssetListResponse(BaseModel):
     items: list[ProfilePhotoAssetStatus]
+    limit: int
+    offset: int
 
 
 class ProfilePhotoAssetPlaybackResponse(BaseModel):
@@ -411,6 +413,8 @@ async def profile_archive_photo_assets(
     profile_id: str,
     post_id: str,
     response: Response,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     identity=Depends(current_identity),
 ):
     """List only safe, ordered archive state for owned photo asset positions."""
@@ -422,7 +426,7 @@ async def profile_archive_photo_assets(
     except ValueError:
         raise HTTPException(status_code=404, detail="profile_archive_not_found") from None
     rows = await _repo.list_owned_archived_post_photo_assets(
-        identity["app_user_id"], profile, post,
+        identity["app_user_id"], profile, post, limit=limit, offset=offset,
     )
     if rows is None:
         # Foreign and missing profile/post combinations deliberately share this.
@@ -430,6 +434,8 @@ async def profile_archive_photo_assets(
     _private_response(response)
     return ProfilePhotoAssetListResponse(
         items=[ProfilePhotoAssetStatus.model_validate(dict(row)) for row in rows],
+        limit=limit,
+        offset=offset,
     )
 
 
@@ -732,8 +738,8 @@ async def profile_archive_playback(profile_id: str, post_id: str, identity=Depen
 async def profile_archive_photo_asset_playback(
     profile_id: str,
     post_id: str,
-    position: int,
     response: Response,
+    position: int = PathParam(ge=0, le=9999),
     identity=Depends(current_identity),
 ):
     """Mint one short-lived read URL for an owned, persisted photo position."""
@@ -744,8 +750,6 @@ async def profile_archive_photo_asset_playback(
         post = UUID(post_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="profile_archive_not_found") from None
-    if position < 0:
-        raise HTTPException(status_code=404, detail="profile_archive_not_found")
     row = await _repo.get_owned_archived_post_photo_asset(
         identity["app_user_id"], profile, post, position,
     )
