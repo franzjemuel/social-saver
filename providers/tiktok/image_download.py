@@ -252,7 +252,8 @@ class TikTokImageDownloader:
                             chunk = await self._read_exactly(reader, min(256 * 1024, remaining))
                             remaining -= len(chunk)
                             total = self._write_chunk(file, chunk, total)
-                        await self._read_exactly(reader, 2)
+                        if await self._read_exactly(reader, 2) != b"\r\n":
+                            raise MediaNotFound("TikTok image response is invalid")
                 else:
                     remaining = expected
                     while remaining:

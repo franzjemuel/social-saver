@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,12 @@ from providers.tiktok.image_download import TikTokImageDownloader
 
 def _write_image(path: Path, image_format="JPEG"):
     Image.new("RGB", (2, 3), color=(1, 2, 3)).save(path, image_format)
+
+
+def _jpeg_bytes():
+    output = BytesIO()
+    Image.new("RGB", (2, 3), color=(1, 2, 3)).save(output, "JPEG")
+    return output.getvalue()
 
 
 @pytest.mark.asyncio
@@ -165,3 +172,32 @@ async def test_image_downloader_rejects_ambiguous_or_malformed_http_framing(tmp_
         await downloader.download_asset(("https://cdn.example.invalid/image",), tmp_path / "image")
     assert "https://" not in str(error.value)
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_image_downloader_requires_crlf_after_each_chunk_and_accepts_valid_chunked_jpeg(tmp_path):
+    image = _jpeg_bytes()
+
+    async def resolve(_, __): return ("8.8.8.8",)
+
+    async def malformed_connect(*_, **__):
+        payload = (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+            + f"{len(image):X}".encode() + b"\r\n" + image + b"\n\n0\r\n\r\n"
+        )
+        return _reader(payload), _Writer(("8.8.8.8", 443))
+
+    malformed = TikTokImageDownloader(resolve=resolve, open_connection=malformed_connect)
+    with pytest.raises(MediaNotFound, match="TikTok image response is invalid"):
+        await malformed.download_asset(("https://cdn.example.invalid/image",), tmp_path / "malformed")
+
+    async def valid_connect(*_, **__):
+        payload = (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+            + f"{len(image):X}".encode() + b"\r\n" + image + b"\r\n0\r\n\r\n"
+        )
+        return _reader(payload), _Writer(("8.8.8.8", 443))
+
+    valid = TikTokImageDownloader(resolve=resolve, open_connection=valid_connect)
+    result = await valid.download_asset(("https://cdn.example.invalid/image",), tmp_path / "valid")
+    assert result.content_type == "image/jpeg" and result.path.read_bytes() == image
