@@ -26,14 +26,20 @@ class TikTokImageDownloader:
 
     _CONTENT_TYPES = {"JPEG": ("image/jpeg", ".jpg"), "PNG": ("image/png", ".png"), "WEBP": ("image/webp", ".webp")}
     _MAX_HEADER_BYTES = 32 * 1024
+    _MAX_CHUNK_LINE_BYTES = 1024
+    _MAX_TRAILER_BYTES = 8 * 1024
+    _MAX_TRAILERS = 16
+    _HEADER_TOKEN_CHARS = frozenset("!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
     def __init__(self, *, max_bytes: int = 25 * 1024 * 1024, max_redirects: int = 3,
                  max_candidates: int = 3, timeout_seconds: int = 20,
+                 candidate_deadline_seconds: int = 60,
                  resolve=None, open_connection=None):
         self.max_bytes = max_bytes
         self.max_redirects = max_redirects
         self.max_candidates = max_candidates
         self.timeout_seconds = timeout_seconds
+        self.candidate_deadline_seconds = candidate_deadline_seconds
         self._resolve = resolve or self._resolve_public_ips
         self._open_connection = open_connection or asyncio.open_connection
 
@@ -50,8 +56,11 @@ class TikTokImageDownloader:
         for candidate in unique[:self.max_candidates]:
             temporary = destination.with_name(f"{destination.name}.candidate")
             try:
-                await self._fetch(candidate, temporary)
-                return await asyncio.to_thread(self._validate_and_move, temporary, destination, self.max_bytes)
+                async with asyncio.timeout(self.candidate_deadline_seconds):
+                    await self._fetch(candidate, temporary)
+                    return await asyncio.to_thread(self._validate_and_move, temporary, destination, self.max_bytes)
+            except TimeoutError:
+                last_error = SourceUnavailable("TikTok image download timed out")
             except (MediaNotFound, SourceUnavailable) as exc:
                 last_error = exc
             except Exception:
@@ -173,26 +182,44 @@ class TikTokImageDownloader:
             raise SourceUnavailable("TikTok image response failed") from None
         if len(raw) > self._MAX_HEADER_BYTES:
             raise MediaNotFound("TikTok image response is invalid")
-        lines = raw.decode("iso-8859-1").split("\r\n")
         try:
-            _, code, _ = lines[0].split(" ", 2)
+            lines = raw.decode("iso-8859-1").split("\r\n")
+        except UnicodeDecodeError:
+            raise MediaNotFound("TikTok image response is invalid") from None
+        try:
+            version, code, _ = lines[0].split(" ", 2)
             status = int(code)
         except (IndexError, ValueError):
             raise MediaNotFound("TikTok image response is invalid") from None
+        if version != "HTTP/1.1" or not 100 <= status <= 599:
+            raise MediaNotFound("TikTok image response is invalid")
         headers = {}
         for line in lines[1:]:
             if not line:
                 continue
-            if ":" not in line:
+            if line[:1] in {" ", "\t"} or ":" not in line:
                 raise MediaNotFound("TikTok image response is invalid")
             key, value = line.split(":", 1)
+            if not self._valid_header_name(key) or key.lower() in headers:
+                raise MediaNotFound("TikTok image response is invalid")
+            if any(ord(character) < 0x20 and character != "\t" for character in value):
+                raise MediaNotFound("TikTok image response is invalid")
             headers[key.lower()] = value.strip()
         return status, headers
 
     async def _copy_body(self, reader, headers, destination: Path) -> None:
         length = headers.get("content-length")
+        transfer_encoding = headers.get("transfer-encoding")
+        if transfer_encoding is not None and length is not None:
+            raise MediaNotFound("TikTok image response is invalid")
+        if transfer_encoding is not None and transfer_encoding.lower() != "chunked":
+            raise MediaNotFound("TikTok image response is invalid")
+        if transfer_encoding is None and length is None:
+            raise MediaNotFound("TikTok image response is invalid")
         if length is not None:
             try:
+                if not length.isascii() or not length.isdecimal():
+                    raise ValueError
                 expected = int(length)
             except ValueError:
                 raise MediaNotFound("TikTok image response is invalid") from None
@@ -202,15 +229,21 @@ class TikTokImageDownloader:
         temporary = destination.with_name(destination.name + ".part")
         try:
             with temporary.open("wb") as file:
-                if headers.get("transfer-encoding", "").lower() == "chunked":
+                if transfer_encoding is not None:
                     while True:
-                        line = await self._readline(reader)
+                        line = await self._readline(reader, self._MAX_CHUNK_LINE_BYTES)
                         try:
-                            chunk_size = int(line.split(b";", 1)[0], 16)
+                            size_token, *extensions = line[:-2].split(b";", 1)
+                            if not size_token or any(byte not in b"0123456789abcdefABCDEF" for byte in size_token):
+                                raise ValueError
+                            if extensions and (len(extensions[0]) > self._MAX_CHUNK_LINE_BYTES - len(size_token) - 1
+                                               or any(byte < 0x20 or byte == 0x7f for byte in extensions[0])):
+                                raise ValueError
+                            chunk_size = int(size_token, 16)
                         except ValueError:
                             raise MediaNotFound("TikTok image response is invalid") from None
                         if chunk_size == 0:
-                            await self._readline(reader)
+                            await self._read_trailers(reader)
                             break
                         if chunk_size < 0 or chunk_size > self.max_bytes - total:
                             raise MediaNotFound("TikTok image exceeds archive size limit")
@@ -220,18 +253,11 @@ class TikTokImageDownloader:
                             remaining -= len(chunk)
                             total = self._write_chunk(file, chunk, total)
                         await self._read_exactly(reader, 2)
-                elif length is not None:
+                else:
                     remaining = expected
                     while remaining:
                         chunk = await self._read_exactly(reader, min(256 * 1024, remaining))
                         remaining -= len(chunk)
-                        total = self._write_chunk(file, chunk, total)
-                else:
-                    while True:
-                        async with asyncio.timeout(self.timeout_seconds):
-                            chunk = await reader.read(256 * 1024)
-                        if not chunk:
-                            break
                         total = self._write_chunk(file, chunk, total)
             if total == 0:
                 raise MediaNotFound("TikTok image validation failed")
@@ -246,12 +272,43 @@ class TikTokImageDownloader:
         file.write(chunk)
         return total
 
-    async def _readline(self, reader) -> bytes:
+    async def _readline(self, reader, maximum: int) -> bytes:
         try:
             async with asyncio.timeout(self.timeout_seconds):
-                return await reader.readline()
+                line = await reader.readline()
         except Exception:
             raise SourceUnavailable("TikTok image response failed") from None
+        if not line.endswith(b"\r\n") or len(line) > maximum:
+            raise MediaNotFound("TikTok image response is invalid")
+        return line
+
+    async def _read_trailers(self, reader) -> None:
+        total = 0
+        names = set()
+        for _ in range(self._MAX_TRAILERS):
+            line = await self._readline(reader, self._MAX_CHUNK_LINE_BYTES)
+            total += len(line)
+            if total > self._MAX_TRAILER_BYTES:
+                raise MediaNotFound("TikTok image response is invalid")
+            if line == b"\r\n":
+                return
+            if line[:1] in {b" ", b"\t"} or b":" not in line:
+                raise MediaNotFound("TikTok image response is invalid")
+            key, value = line[:-2].split(b":", 1)
+            try:
+                name = key.decode("ascii").lower()
+            except UnicodeDecodeError:
+                raise MediaNotFound("TikTok image response is invalid") from None
+            if (not self._valid_header_name(name) or name in names
+                    or name in {"content-length", "transfer-encoding"}
+                    or any(byte < 0x20 and byte != 0x09 for byte in value)):
+                raise MediaNotFound("TikTok image response is invalid")
+            names.add(name)
+        raise MediaNotFound("TikTok image response is invalid")
+
+    @classmethod
+    def _valid_header_name(cls, value: str) -> bool:
+        return bool(value) and value.isascii() and all(character in cls._HEADER_TOKEN_CHARS for character in value)
 
     async def _read_exactly(self, reader, size: int) -> bytes:
         try:

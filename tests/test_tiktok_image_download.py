@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from providers.base import MediaNotFound
+from providers.base import MediaNotFound, SourceUnavailable
 from providers.tiktok.image_download import TikTokImageDownloader
 
 
@@ -117,3 +117,51 @@ async def test_image_downloader_refuses_private_dns_before_connect(tmp_path):
     with pytest.raises(MediaNotFound, match="unsafe"):
         await downloader._fetch("https://cdn.example.invalid/image.jpg", tmp_path / "image")
     assert opened is False
+
+
+class _SlowChunkedReader:
+    """A response which keeps delivering legal small chunks forever."""
+
+    async def readuntil(self, _):
+        return b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+
+    async def readline(self):
+        return b"1\r\n"
+
+    async def readexactly(self, size):
+        await asyncio.sleep(0.01)
+        return b"x" if size == 1 else b"\r\n"
+
+
+@pytest.mark.asyncio
+async def test_candidate_deadline_stops_a_continuous_slow_trickle_response(tmp_path):
+    async def resolve(_, __): return ("8.8.8.8",)
+    async def connect(*_, **__): return _SlowChunkedReader(), _Writer(("8.8.8.8", 443))
+
+    downloader = TikTokImageDownloader(
+        resolve=resolve, open_connection=connect, timeout_seconds=1, candidate_deadline_seconds=0.04,
+    )
+    with pytest.raises(SourceUnavailable, match="TikTok image download failed"):
+        await downloader.download_asset(("https://cdn.example.invalid/image",), tmp_path / "image")
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [
+    b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\nx",
+    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 1\r\n\r\n1\r\nx\r\n0\r\n\r\n",
+    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\nx",
+    b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nxx",
+    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1;" + b"a" * 1024 + b"\r\nx\r\n0\r\n\r\n",
+    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n0\r\n",
+    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n0\r\nContent-Length: 1\r\n\r\n",
+])
+async def test_image_downloader_rejects_ambiguous_or_malformed_http_framing(tmp_path, payload):
+    async def resolve(_, __): return ("8.8.8.8",)
+    async def connect(*_, **__): return _reader(payload), _Writer(("8.8.8.8", 443))
+
+    downloader = TikTokImageDownloader(resolve=resolve, open_connection=connect)
+    with pytest.raises((MediaNotFound, SourceUnavailable)) as error:
+        await downloader.download_asset(("https://cdn.example.invalid/image",), tmp_path / "image")
+    assert "https://" not in str(error.value)
+    assert not list(tmp_path.iterdir())

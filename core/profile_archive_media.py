@@ -40,14 +40,11 @@ class ProfileArchiveMediaService:
                     downloaded.sha256, key, downloaded.size_bytes, downloaded.content_type,
                 )
             except Exception:
-                # The deterministic key can be retried safely. Remove this
-                # just-uploaded object only when no durable record exists;
-                # never delete an object another archive flow already claimed.
-                try:
-                    if await self.repo.get_stored_object_by_sha(downloaded.sha256) is None:
-                        await self.storage.delete(key)
-                except Exception:
-                    pass
+                # Do not delete here. A separate concurrent writer can claim
+                # this deterministic, content-addressed object between upload
+                # and a non-atomic lookup. Retrying this SHA safely rewrites
+                # the same private key; durable orphan cleanup belongs to a
+                # reconciler that can prove an object has no references.
                 raise SourceUnavailable("profile media storage record failed") from None
         try:
             attached = await self.repo.attach_owned_archived_post_media_object(

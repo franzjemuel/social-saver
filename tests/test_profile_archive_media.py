@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 from pathlib import Path
 import threading
@@ -284,7 +285,7 @@ async def test_photo_carousel_persists_ordered_assets_and_retries_only_missing(t
 
 
 @pytest.mark.asyncio
-async def test_storage_record_failure_cleans_unclaimed_uploaded_image(tmp_path):
+async def test_storage_record_failure_defers_cleanup_of_unrecorded_content_addressed_object(tmp_path):
     image = tmp_path / "image.jpg"; image.write_bytes(b"image")
     downloaded = DownloadedAsset(image, 5, "1" * 64, "image/jpeg")
     deleted = []
@@ -301,7 +302,42 @@ async def test_storage_record_failure_cleans_unclaimed_uploaded_image(tmp_path):
         await ProfileArchiveMediaService(RecordFailure(), Storage()).persist(
             user_id="tenant", profile_id=PROFILE, asset_id=ASSET, downloaded=downloaded,
         )
-    assert len(deleted) == 1 and deleted[0].startswith("archive/")
+    assert deleted == []
+
+
+@pytest.mark.asyncio
+async def test_record_failure_cannot_delete_a_concurrent_writer_shared_sha_object(tmp_path):
+    image = tmp_path / "image.jpg"; image.write_bytes(b"image")
+    downloaded = DownloadedAsset(image, 5, "2" * 64, "image/jpeg")
+    deleted = []
+    first_record_attempt = asyncio.Event()
+    successful_writer_finished = asyncio.Event()
+
+    class FailingRepo(Repo):
+        async def create_stored_object(self, *_):
+            first_record_attempt.set()
+            await successful_writer_finished.wait()
+            raise RuntimeError("record failed")
+
+    class SuccessfulRepo(Repo):
+        async def create_stored_object(self, *_):
+            successful_writer_finished.set()
+            return UUID("77777777-7777-7777-7777-777777777777")
+
+    class Storage:
+        async def put_file(self, *_): pass
+        async def delete(self, key): deleted.append(key)
+
+    failing = asyncio.create_task(ProfileArchiveMediaService(FailingRepo(), Storage()).persist(
+        user_id="tenant", profile_id=PROFILE, asset_id=ASSET, downloaded=downloaded,
+    ))
+    await first_record_attempt.wait()
+    assert await ProfileArchiveMediaService(SuccessfulRepo(), Storage()).persist(
+        user_id="tenant", profile_id=PROFILE, asset_id=ASSET, downloaded=downloaded,
+    ) is False
+    with pytest.raises(SourceUnavailable, match="profile media storage record failed"):
+        await failing
+    assert deleted == []
 
 
 @pytest.mark.asyncio
