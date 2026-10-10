@@ -18,6 +18,7 @@ def _scanner_stub(scanned):
         scanned.canonical_url,
         is_photo=scanned.is_photo,
         caption=scanned.description,
+        photo_candidate_groups=scanned.image_url_candidates,
     )
 
 
@@ -131,6 +132,7 @@ async def process_full_sync_profile(job, repo, scanner=None, resolver=None):
                 metadata,
                 is_photo=scanned.is_photo,
                 canonical_url=scanned.canonical_url,
+                photo_candidate_groups=scanned.image_url_candidates,
             )
         except SourceUnavailable:
             metadata_failures += 1

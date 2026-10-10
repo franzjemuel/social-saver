@@ -2,10 +2,11 @@
 
 from contextlib import redirect_stdout
 from dataclasses import dataclass
+from ipaddress import ip_address
 from io import StringIO
 from pathlib import Path
 from typing import Callable
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 from providers.base import SourceUnavailable, TerminalProviderError
 
@@ -29,6 +30,10 @@ class TikTokScannedPost:
     canonical_url: str
     is_photo: bool
     description: str | None = None
+    # Ordered by image position. Each inner tuple is an ordered set of
+    # provider-provided candidates for that one image. These remain worker-only
+    # acquisition hints; no browser/API projection exposes them.
+    image_url_candidates: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -82,6 +87,9 @@ class TikTokProfileScanner:
                 ),
                 is_photo=bool(item.is_photo),
                 description=str(item.description) if item.description else None,
+                image_url_candidates=self._safe_image_candidate_groups(
+                    getattr(item, "image_urls", ()) if item.is_photo else (),
+                ),
             )
             for item in items
         ]
@@ -104,8 +112,58 @@ class TikTokProfileScanner:
     def _safe_http_url(value) -> str | None:
         if not isinstance(value, str):
             return None
-        parsed = urlparse(value)
+        parsed = urlsplit(value)
         return value if parsed.scheme in {"http", "https"} and parsed.netloc else None
+
+    @staticmethod
+    def _safe_image_candidate_url(value: object) -> str | None:
+        """Keep structurally safe HTTPS candidates without acquiring them.
+
+        The scanner is deliberately metadata-only. Future byte acquisition must
+        still resolve and pin public addresses for every redirect hop; HTTPS and
+        a public-looking hostname alone are not SSRF protection.
+        """
+        if not isinstance(value, str):
+            return None
+        parsed = urlsplit(value)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            return None
+        try:
+            if parsed.port not in (None, 443):
+                return None
+        except ValueError:
+            return None
+        host = parsed.hostname.rstrip(".").lower()
+        if not host or host == "localhost" or host.endswith((".localhost", ".local")):
+            return None
+        try:
+            address = ip_address(host)
+        except ValueError:
+            # A DNS hostname is retained only as metadata. The future downloader
+            # must reject private/reserved DNS answers and unsafe redirects.
+            return value if "." in host else None
+        if not address.is_global:
+            return None
+        return value
+
+    @classmethod
+    def _safe_image_candidate_groups(cls, value: object) -> tuple[tuple[str, ...], ...]:
+        """Preserve image positions while dropping unsafe candidate URLs."""
+        if not isinstance(value, (list, tuple)):
+            return ()
+        groups: list[tuple[str, ...]] = []
+        for raw_group in value:
+            candidates = (raw_group,) if isinstance(raw_group, str) else raw_group
+            if not isinstance(candidates, (list, tuple)):
+                groups.append(())
+                continue
+            safe: list[str] = []
+            for candidate in candidates:
+                url = cls._safe_image_candidate_url(candidate)
+                if url is not None and url not in safe:
+                    safe.append(url)
+            groups.append(tuple(safe))
+        return tuple(groups)
 
     def _resolve_creator(self, client, username: str):
         with redirect_stdout(StringIO()):

@@ -501,7 +501,13 @@ class Repository:
         )
 
     async def insert_archived_posts_if_missing(self, user_id, archived_profile_id, posts):
-        """Index scanner-discovered posts without overwriting richer existing rows."""
+        """Index scanner posts while refreshing only safe scanner asset hints.
+
+        Existing scalar post metadata remains untouched. Scanner-provided asset
+        candidates are different: they are the authoritative ordered acquisition
+        hints for a photo/carousel and may be refreshed without replacing an
+        attached ``stored_object_id``.
+        """
         inserted = set()
         async with self.pool.acquire() as con:
             async with con.transaction():
@@ -512,19 +518,41 @@ class Repository:
                 if owned is None:
                     raise PermissionError("Archived profile not found")
                 for post in posts:
-                    platform_post_id = await con.fetchval(
+                    row = await con.fetchrow(
                         """insert into archived_posts
-                            (archived_profile_id,platform_post_id,original_url,media_type,caption,
-                             published_at,thumbnail_url,is_present_on_original,metadata)
+                             (archived_profile_id,platform_post_id,original_url,media_type,caption,
+                              published_at,thumbnail_url,is_present_on_original,metadata)
                            values($1::uuid,$2,$3,$4,$5,$6,$7,true,$8)
                            on conflict(archived_profile_id,platform_post_id) do nothing
-                           returning platform_post_id""",
+                           returning id,platform_post_id""",
                         archived_profile_id, post.platform_post_id, post.original_url,
                         post.media_type, post.caption, post.published_at, post.thumbnail_url,
                         post.metadata,
                     )
-                    if platform_post_id is not None:
-                        inserted.add(platform_post_id)
+                    if row is None:
+                        post_id = await con.fetchval(
+                            """select id from archived_posts
+                               where archived_profile_id=$1::uuid and platform_post_id=$2""",
+                            archived_profile_id, post.platform_post_id,
+                        )
+                    else:
+                        post_id = row["id"]
+                        inserted.add(row["platform_post_id"])
+                    for asset in post.assets:
+                        await con.execute(
+                            """insert into archived_post_media_assets
+                                 (archived_post_id,position,asset_type,source_url,thumbnail_url,
+                                  duration_seconds,width,height,metadata)
+                               values($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                               on conflict(archived_post_id,position) do update set
+                                 asset_type=excluded.asset_type, source_url=excluded.source_url,
+                                 thumbnail_url=excluded.thumbnail_url,
+                                 duration_seconds=excluded.duration_seconds, width=excluded.width,
+                                 height=excluded.height, metadata=excluded.metadata""",
+                            post_id, asset.position, asset.asset_type, asset.source_url,
+                            asset.thumbnail_url, asset.duration_seconds, asset.width,
+                            asset.height, asset.metadata,
+                        )
         return inserted
 
     async def create_owned_profile_full_sync_job(self, user_id, chat_id, profile_id, *, queue_name):

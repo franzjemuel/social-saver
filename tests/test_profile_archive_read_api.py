@@ -121,6 +121,14 @@ def test_repository_queries_are_tenant_scoped_ordered_and_do_not_select_internal
     assert "source_url" not in posts
 
 
+def test_photo_candidate_urls_remain_internal_to_archive_api_projections():
+    post = api._profile_archive_post(post_row())
+    dumped = post.model_dump()
+
+    assert "source_url" not in dumped
+    assert "fallback_source_urls" not in dumped
+
+
 def test_existing_media_archive_routes_are_unchanged_and_profile_routes_require_telegram_identity():
     routes = {route.path: route for route in api.app.routes if isinstance(route, APIRoute)}
     assert "/v1/archive" in routes

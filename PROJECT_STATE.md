@@ -136,6 +136,19 @@ Updated for v3.8.
   frontend progressive loading/full-profile controls remain pending until hosted
   backend acceptance.
 
+## TikTok photo/carousel asset metadata — 2026-10-10
+
+- The pinned, no-cookie tt-dlp scanner now retains ordered public image-candidate
+  groups for scanner-confirmed TikTok photo posts. Import, manual sync, and full
+  sync persist one internal `photo` asset record per safe candidate group; multi-image
+  posts project as `carousel` while single-image posts remain `photo`.
+- Candidate URLs are worker-only acquisition hints: browser/API projections still
+  exclude asset source URLs and fallback candidates. This increment does not download
+  images, write R2 objects, mint image playback URLs, or change existing video paths.
+- Future image acquisition must validate resolved public addresses and every redirect
+  hop before connecting; the metadata scanner rejects non-HTTPS, local, private, and
+  malformed literal-host candidates but performs no network acquisition itself.
+
 ## Manual TikTok profile sync — 2026-10-06
 
 - Added a worker-owned, tenant-scoped manual sync queue and safe status projection.
@@ -172,7 +185,7 @@ Telegram-first architecture; replaceable Instagram provider; Postgres/PGMQ; priv
 Real Instagram extraction/session behavior is not yet proven on staging. Live still needs network-level egress restrictions. Public beta needs finalized privacy/terms and explicit backup/log/payment retention periods. Pricing needs real traffic cost measurements.
 
 ## Next action
-Use the persistent GitHub repository as source of truth, run `python scripts/staging-readiness.py`, then execute the hosted staging launch gate in `docs/staging-launch-v33.md`. Do not implement Facebook extraction until it passes. The next profile-archive increment should add photo/carousel asset persistence after the video worker path is accepted.
+Use the persistent GitHub repository as source of truth, run `python scripts/staging-readiness.py`, then execute the hosted staging launch gate in `docs/staging-launch-v33.md`. Do not implement Facebook extraction until it passes. The next profile-archive increment should add worker-owned verified photo/carousel byte persistence after the metadata path is accepted.
 
 - v3.6 closed a Telegram-bot archive deletion regression: bot and Mini App now both queue worker-only physical R2 cleanup.
 

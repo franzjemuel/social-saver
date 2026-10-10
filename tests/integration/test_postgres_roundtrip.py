@@ -15,7 +15,7 @@ import pytest_asyncio
 from core.database import Database
 from core.queue import JobQueue
 from core.repository import ProfileImportIdempotencyConflict, Repository
-from providers.base import ArchivedPost
+from providers.base import ArchiveMediaAsset, ArchivedPost
 from ops import staging_canary
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -466,6 +466,64 @@ async def test_full_profile_sync_repository_indexes_109_resumes_and_preserves_me
     assert await database.pool.fetchval(
         'select deleted_at is null from stored_objects where id=$1', object_id,
     )
+
+    # Ordered photo assets use the same attachment table. A subsequent metadata
+    # refresh may replace ephemeral acquisition hints, but must neither duplicate
+    # rows nor detach a previously archived private image object.
+    inserted_photos = await repo.insert_archived_posts_if_missing(
+        owner,
+        profile,
+        [ArchivedPost(
+            platform_post_id='photo-carousel',
+            original_url='https://www.tiktok.com/@creator/photo/photo-carousel',
+            media_type='carousel',
+            assets=[
+                ArchiveMediaAsset(0, 'photo', 'https://images.example.invalid/0.jpg'),
+                ArchiveMediaAsset(1, 'photo', 'https://images.example.invalid/1.jpg'),
+                ArchiveMediaAsset(2, 'photo', 'https://images.example.invalid/2.jpg'),
+            ],
+        )],
+    )
+    assert inserted_photos == {'photo-carousel'}
+    photo_post_id = await database.pool.fetchval(
+        """select id from archived_posts
+           where archived_profile_id=$1 and platform_post_id='photo-carousel'""",
+        profile,
+    )
+    photo_object_id = await database.pool.fetchval(
+        """insert into stored_objects(sha256,storage_key,size_bytes,content_type)
+           values('e' || repeat('0',63),'full-sync-retained-photo',742,'image/jpeg') returning id""",
+    )
+    await database.pool.execute(
+        """update archived_post_media_assets set stored_object_id=$2
+           where archived_post_id=$1 and position=1""",
+        photo_post_id, photo_object_id,
+    )
+    refreshed_photos = await repo.insert_archived_posts_if_missing(
+        owner,
+        profile,
+        [ArchivedPost(
+            platform_post_id='photo-carousel',
+            original_url='https://www.tiktok.com/@creator/photo/photo-carousel',
+            media_type='carousel',
+            assets=[
+                ArchiveMediaAsset(0, 'photo', 'https://images.example.invalid/0-refresh.jpg'),
+                ArchiveMediaAsset(1, 'photo', 'https://images.example.invalid/1-refresh.jpg'),
+                ArchiveMediaAsset(2, 'photo', 'https://images.example.invalid/2-refresh.jpg'),
+            ],
+        )],
+    )
+    assert refreshed_photos == set()
+    photo_assets = await database.pool.fetch(
+        """select position,stored_object_id from archived_post_media_assets
+           where archived_post_id=$1 order by position""",
+        photo_post_id,
+    )
+    assert [(row['position'], row['stored_object_id']) for row in photo_assets] == [
+        (0, None), (1, photo_object_id), (2, None),
+    ]
+    posts = await repo.list_owned_archived_profile_posts(owner, profile, limit=200)
+    assert next(row for row in posts if row['platform_post_id'] == 'photo-carousel')['has_archived_media'] is True
 
     first, second = await asyncio.gather(
         repo.create_owned_profile_full_sync_job(owner, 1, profile, queue_name=queue.queue_name),

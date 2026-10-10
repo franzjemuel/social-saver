@@ -12,6 +12,9 @@ from providers.base import (
 )
 
 
+PhotoCandidateGroups = tuple[tuple[str, ...], ...]
+
+
 def _text(value: Any) -> str | None:
     return str(value) if value not in (None, "") else None
 
@@ -43,6 +46,31 @@ def _published_at(metadata: dict[str, Any]) -> datetime | None:
     return None
 
 
+def _photo_assets(candidate_groups: PhotoCandidateGroups) -> list[ArchiveMediaAsset]:
+    """Normalize scanner-owned image candidates without exposing them publicly.
+
+    Empty groups retain the original scanner position in the persisted sequence
+    by leaving a gap; this makes later partial image acquisition unambiguous.
+    """
+    assets = []
+    for position, candidates in enumerate(candidate_groups):
+        if not candidates:
+            continue
+        assets.append(ArchiveMediaAsset(
+            position=position,
+            asset_type="photo",
+            source_url=candidates[0],
+            metadata={"fallback_source_urls": list(candidates[1:])},
+        ))
+    return assets
+
+
+def _post_media_type(is_photo: bool, candidate_groups: PhotoCandidateGroups) -> str:
+    if not is_photo:
+        return "video"
+    return "carousel" if len(candidate_groups) > 1 else "photo"
+
+
 def normalize_tiktok_profile(metadata: dict[str, Any], username: str) -> ArchivedProfile:
     """Return the stable TikTok account identity from profile/entry metadata."""
     account_id = _text(metadata.get("uploader_id") or metadata.get("channel_id"))
@@ -66,6 +94,7 @@ def normalize_tiktok_profile(metadata: dict[str, Any], username: str) -> Archive
 def normalize_tiktok_post(
     metadata: dict[str, Any], *, observed_at: datetime | None = None,
     is_photo: bool = False, canonical_url: str | None = None,
+    photo_candidate_groups: PhotoCandidateGroups = (),
 ) -> ArchivedPost:
     """Normalize one yt-dlp TikTok entry; retain only controlled provider detail."""
     post_id = _text(metadata.get("id"))
@@ -77,7 +106,7 @@ def normalize_tiktok_post(
     duration_seconds = float(duration) if isinstance(duration, (int, float)) and not isinstance(duration, bool) else None
     thumbnail = _url(metadata.get("thumbnail"))
     media_url = _url(metadata.get("url"))
-    assets = [] if is_photo else [ArchiveMediaAsset(
+    assets = _photo_assets(photo_candidate_groups) if is_photo else [ArchiveMediaAsset(
         position=0,
         asset_type="video",
         source_url=media_url,
@@ -88,7 +117,7 @@ def normalize_tiktok_post(
     return ArchivedPost(
         platform_post_id=post_id,
         original_url=original_url,
-        media_type="photo" if is_photo else "video",
+        media_type=_post_media_type(is_photo, photo_candidate_groups),
         caption=_text(metadata.get("description") or metadata.get("title")),
         published_at=_published_at(metadata),
         thumbnail_url=thumbnail,
@@ -105,20 +134,24 @@ def normalize_tiktok_post(
         metadata={
             "extractor": _text(metadata.get("extractor")),
             "upload_date": _text(metadata.get("upload_date")),
+            **({"image_count": len(photo_candidate_groups)} if is_photo else {}),
         },
     )
 
 
 def normalize_scanned_tiktok_post(
     post_id: str, canonical_url: str, *, is_photo: bool, caption: str | None,
-    error: str | None = None,
+    error: str | None = None, photo_candidate_groups: PhotoCandidateGroups = (),
 ) -> ArchivedPost:
     """Keep a scanner-discovered post even when rich metadata is unavailable."""
     return ArchivedPost(
         platform_post_id=post_id,
         original_url=canonical_url,
-        media_type="photo" if is_photo else "video",
-        assets=[],
+        media_type=_post_media_type(is_photo, photo_candidate_groups),
+        assets=_photo_assets(photo_candidate_groups) if is_photo else [],
         caption=caption,
-        metadata={"metadata_resolution_error": error} if error else {},
+        metadata={
+            **({"metadata_resolution_error": error} if error else {}),
+            **({"image_count": len(photo_candidate_groups)} if is_photo else {}),
+        },
     )
