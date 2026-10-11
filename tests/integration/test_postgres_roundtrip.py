@@ -171,6 +171,66 @@ async def test_profile_media_job_uuid_parameters_use_real_postgres(database):
     assert await repo.create_owned_profile_media_job(owner, 1, profile, uuid4()) is None
 
 
+async def test_profile_photo_delivery_job_is_owned_complete_and_coalesced(database):
+    """The delivery queue must never target another tenant or an incomplete carousel."""
+    repo = Repository(database.pool)
+    queue = JobQueue(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','delivery-account','owner') returning id""", owner,
+    )
+    post = await database.pool.fetchval(
+        """insert into archived_posts(archived_profile_id,platform_post_id,original_url,media_type)
+           values($1,'delivery-post','https://www.tiktok.com/@owner/photo/delivery-post','carousel')
+           returning id""", profile,
+    )
+    objects = []
+    for position in range(2):
+        object_id = await database.pool.fetchval(
+            """insert into stored_objects(sha256,storage_key,size_bytes,content_type)
+               values($1,$2,1,'image/jpeg') returning id""",
+            f"photo-delivery-{post}-{position}", f"archive/test/photo-delivery-{position}.jpg",
+        )
+        objects.append(object_id)
+        await database.pool.execute(
+            """insert into archived_post_media_assets
+                 (archived_post_id,position,asset_type,stored_object_id)
+               values($1,$2,'photo',$3)""", post, position, object_id,
+        )
+
+    first, second = await asyncio.gather(
+        repo.create_owned_profile_photo_delivery_job(owner, 1, profile, post, queue_name=queue.queue_name),
+        repo.create_owned_profile_photo_delivery_job(owner, 1, profile, post, queue_name=queue.queue_name),
+    )
+    assert first is not None and second is not None
+    assert first.id == second.id
+    assert sorted((first.created, second.created)) == [False, True]
+    assert (await repo.get_job(first.id))["input"] == {
+        "profile_id": str(profile), "post_id": str(post), "asset_count": 2,
+    }
+    assert await repo.create_owned_profile_photo_delivery_job(other, 2, profile, post, queue_name=queue.queue_name) is None
+    messages = await queue.claim()
+    matches = [message for message in messages if message['message']['job_id'] == str(first.id)]
+    assert len(matches) == 1
+    await queue.archive(matches[0]['msg_id'])
+
+    await repo.start_job(first.id)
+    assert await repo.claim_profile_photo_delivery_attempt(first.id, owner, profile, post) == "claimed"
+    assert await repo.confirm_profile_photo_delivery_attempt(first.id, owner, profile, post) is True
+    assert await repo.claim_profile_photo_delivery_attempt(first.id, owner, profile, post) == "confirmed"
+    await repo.complete_job(first.id, {"sent": 2})
+
+    rows = await repo.list_owned_complete_profile_photo_delivery_assets(owner, profile, post)
+    assert [row["position"] for row in rows] == [0, 1]
+    assert await repo.list_owned_complete_profile_photo_delivery_assets(other, profile, post) == []
+    await database.pool.execute(
+        "update archived_post_media_assets set stored_object_id=null where archived_post_id=$1 and position=1", post,
+    )
+    assert await repo.create_owned_profile_photo_delivery_job(owner, 1, profile, post, queue_name=queue.queue_name) is None
+
+
 async def test_profile_media_job_coalesces_concurrent_targeted_requests(database):
     """Double taps must produce one PGMQ job before a video is persisted."""
     repo = Repository(database.pool)

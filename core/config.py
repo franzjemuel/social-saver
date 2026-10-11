@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     queue_heartbeat_seconds: int = 20
     queue_long_job_visibility_seconds: int = 300
     telegram_hosted_upload_limit_bytes: int = 49_000_000
+    telegram_photo_upload_limit_bytes: int = 10_000_000
     r2_account_id: str | None = None
     r2_access_key_id: str | None = None
     r2_secret_access_key: str | None = None

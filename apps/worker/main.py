@@ -17,6 +17,7 @@ from apps.worker.processors.profile_import_validation import process_validate_pr
 from apps.worker.processors.profile_import import process_import_profile, TikTokProfileImportFailure
 from apps.worker.processors.profile_sync import process_sync_profile, TikTokProfileSyncFailure
 from apps.worker.processors.profile_full_sync import process_full_sync_profile, TikTokProfileFullSyncFailure
+from apps.worker.processors.profile_photo_delivery import process_deliver_profile_photos
 from providers.tiktok.validation import TikTokProfileValidationFailure
 from core.observability import init_observability, capture_job_exception
 from core.rate_limits import provider_concurrency
@@ -47,6 +48,20 @@ async def dead_letter(db, queue, repo, msg, job_id, exc):
             )
             await repo.fail_job(job_id, code, message)
     await queue.send_dead_letter(payload)
+    await queue.archive(msg["msg_id"])
+
+
+async def complete_terminal_failure(repo, queue, bot, msg, job_id, job, exc):
+    """Persist and archive terminal jobs even when their courtesy notice fails."""
+    code = type(exc).__name__.upper()
+    await repo.fail_job(job_id, code, str(exc))
+    if getattr(exc, "notify_user", True):
+        try:
+            await bot.send_message(job["telegram_chat_id"], f"❌ {str(exc)}")
+        except Exception:
+            # A blocked/deleted Telegram DM must not strand an already-terminal
+            # queue message or retry its original provider/storage work.
+            pass
     await queue.archive(msg["msg_id"])
 
 async def main():
@@ -126,6 +141,9 @@ async def main():
                     async with provider_concurrency.for_platform("tiktok"):
                         result = await process_archive_profile_media(job, repo)
                     success_message = None
+                elif job["job_type"] == "deliver_profile_photos":
+                    result = await process_deliver_profile_photos(job, repo, bot)
+                    success_message = None
                 elif job["job_type"] == "validate_profile_import":
                     async with provider_concurrency.for_platform("tiktok"):
                         result = await process_validate_profile_import(job)
@@ -150,10 +168,7 @@ async def main():
                     await bot.send_message(job["telegram_chat_id"], success_message)
                 await queue.archive(msg["msg_id"])
             except TerminalProviderError as exc:
-                code = type(exc).__name__.upper()
-                await repo.fail_job(job_id, code, str(exc))
-                await bot.send_message(job["telegram_chat_id"], f"❌ {str(exc)}")
-                await queue.archive(msg["msg_id"])
+                await complete_terminal_failure(repo, queue, bot, msg, job_id, job, exc)
             except TikTokProfileValidationFailure as exc:
                 # Validation errors are rendered through the Mini App status API;
                 # do not expose provider details or send an unrelated bot message.
