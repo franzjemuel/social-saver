@@ -212,6 +212,50 @@ async def test_image_downloader_logs_sanitized_framing_diagnostics(tmp_path, cap
 
 
 @pytest.mark.asyncio
+async def test_image_downloader_accepts_noncritical_duplicate_headers(tmp_path):
+    image = _jpeg_bytes()
+
+    async def resolve(_, __):
+        return ("8.8.8.8",)
+
+    async def connect(*_, **__):
+        return _reader(
+            b"HTTP/1.1 200 OK\r\nSet-Cookie: one\r\nSet-Cookie: two\r\n"
+            + b"Content-Length: "
+            + str(len(image)).encode()
+            + b"\r\n\r\n"
+            + image,
+        ), _Writer(("8.8.8.8", 443))
+
+    downloader = TikTokImageDownloader(resolve=resolve, open_connection=connect)
+    result = await downloader.download_asset(
+        ("https://cdn.example.invalid/image",), tmp_path / "image",
+    )
+
+    assert result.content_type == "image/jpeg"
+    assert result.path.read_bytes() == image
+
+
+@pytest.mark.asyncio
+async def test_image_downloader_rejects_duplicate_redirect_targets(tmp_path, caplog):
+    async def resolve(_, __):
+        return ("8.8.8.8",)
+
+    async def connect(*_, **__):
+        return _reader(
+            b"HTTP/1.1 302 Found\r\nLocation: https://one.example.invalid/image\r\n"
+            b"Location: https://two.example.invalid/image\r\nContent-Length: 0\r\n\r\n",
+        ), _Writer(("8.8.8.8", 443))
+
+    downloader = TikTokImageDownloader(resolve=resolve, open_connection=connect)
+    with pytest.raises(MediaNotFound, match="TikTok image response is invalid"):
+        await downloader.download_asset(("https://cdn.example.invalid/image",), tmp_path / "image")
+
+    assert "framing_reason=ambiguous_redirect" in caplog.text
+    assert "example.invalid" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_image_downloader_falls_back_after_invalid_http_framing(tmp_path):
     """A strict framing rejection consumes only that bounded candidate."""
     image = _jpeg_bytes()

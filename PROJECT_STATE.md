@@ -192,6 +192,10 @@ Updated for v3.8.
   rejections: an opaque correlation value, provider, candidate attempt, and a
   bounded reason code. It never logs acquisition URLs, response headers or
   bodies, cookies, or credentials.
+- A follow-up review-only correction accepts repeated non-critical response
+  fields while still requiring exactly one `Content-Length`,
+  `Transfer-Encoding`, and redirect target. It preserves strict body framing
+  and avoids treating ordinary repeated CDN fields as an acquisition failure.
 - The strict parser, bounded candidate fallback, retry behavior, and
   customer-facing error strings are unchanged. No hosted retry or deployment
   has been performed for this diagnostic increment.
