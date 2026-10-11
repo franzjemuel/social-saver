@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import ipaddress
+import logging
 import os
 import socket
 import ssl
@@ -14,6 +15,25 @@ from PIL import Image, UnidentifiedImageError
 
 from core.media_download import DownloadedAsset
 from providers.base import MediaNotFound, SourceUnavailable
+
+
+logger = logging.getLogger(__name__)
+
+
+class _ImageFramingError(MediaNotFound):
+    """A terminal malformed-response error with a private reason code."""
+
+    def __init__(self, reason_code: str):
+        super().__init__("TikTok image response is invalid")
+        self.framing_reason = reason_code
+
+
+class _ImageResponseError(SourceUnavailable):
+    """A retryable response failure with a private framing-related reason."""
+
+    def __init__(self, reason_code: str):
+        super().__init__("TikTok image response failed")
+        self.framing_reason = reason_code
 
 
 class TikTokImageDownloader:
@@ -52,8 +72,9 @@ class TikTokImageDownloader:
         if not unique:
             raise MediaNotFound("TikTok image has no acquisition candidate")
         destination.parent.mkdir(parents=True, exist_ok=True)
+        correlation_id = hashlib.sha256(destination.name.encode("utf-8")).hexdigest()[:16]
         last_error = None
-        for candidate in unique[:self.max_candidates]:
+        for attempt, candidate in enumerate(unique[:self.max_candidates], start=1):
             temporary = destination.with_name(f"{destination.name}.candidate")
             try:
                 async with asyncio.timeout(self.candidate_deadline_seconds):
@@ -63,6 +84,7 @@ class TikTokImageDownloader:
                 last_error = SourceUnavailable("TikTok image download timed out")
             except (MediaNotFound, SourceUnavailable) as exc:
                 last_error = exc
+                self._log_framing_rejection(correlation_id, attempt, exc)
             except Exception:
                 last_error = SourceUnavailable("TikTok image download failed")
             finally:
@@ -70,6 +92,19 @@ class TikTokImageDownloader:
         if isinstance(last_error, MediaNotFound):
             raise last_error
         raise SourceUnavailable("TikTok image download failed") from None
+
+    @staticmethod
+    def _log_framing_rejection(correlation_id: str, candidate_attempt: int, error: Exception) -> None:
+        """Emit a correlation-safe parser category without provider response data."""
+        reason = getattr(error, "framing_reason", None)
+        if isinstance(reason, str):
+            logger.warning(
+                "tiktok_image_framing_rejected correlation_id=%s provider=tiktok "
+                "candidate_attempt=%d framing_reason=%s",
+                correlation_id,
+                candidate_attempt,
+                reason,
+            )
 
     async def _fetch(self, raw_url: str, destination: Path) -> None:
         url = raw_url
@@ -178,32 +213,40 @@ class TikTokImageDownloader:
         try:
             async with asyncio.timeout(self.timeout_seconds):
                 raw = await reader.readuntil(b"\r\n\r\n")
+        except asyncio.LimitOverrunError:
+            raise _ImageFramingError("headers_too_large") from None
+        except asyncio.IncompleteReadError:
+            raise _ImageResponseError("truncated_headers") from None
+        except TimeoutError:
+            raise _ImageResponseError("headers_timeout") from None
         except Exception:
             raise SourceUnavailable("TikTok image response failed") from None
         if len(raw) > self._MAX_HEADER_BYTES:
-            raise MediaNotFound("TikTok image response is invalid")
+            raise _ImageFramingError("headers_too_large")
         try:
             lines = raw.decode("iso-8859-1").split("\r\n")
         except UnicodeDecodeError:
-            raise MediaNotFound("TikTok image response is invalid") from None
+            raise _ImageFramingError("headers_not_decodable") from None
         try:
             version, code, _ = lines[0].split(" ", 2)
             status = int(code)
         except (IndexError, ValueError):
-            raise MediaNotFound("TikTok image response is invalid") from None
+            raise _ImageFramingError("invalid_status_line") from None
         if version != "HTTP/1.1" or not 100 <= status <= 599:
-            raise MediaNotFound("TikTok image response is invalid")
+            raise _ImageFramingError("invalid_status_line")
         headers = {}
         for line in lines[1:]:
             if not line:
                 continue
             if line[:1] in {" ", "\t"} or ":" not in line:
-                raise MediaNotFound("TikTok image response is invalid")
+                raise _ImageFramingError("malformed_header")
             key, value = line.split(":", 1)
-            if not self._valid_header_name(key) or key.lower() in headers:
-                raise MediaNotFound("TikTok image response is invalid")
+            if not self._valid_header_name(key):
+                raise _ImageFramingError("malformed_header")
+            if key.lower() in headers:
+                raise _ImageFramingError("duplicate_header")
             if any(ord(character) < 0x20 and character != "\t" for character in value):
-                raise MediaNotFound("TikTok image response is invalid")
+                raise _ImageFramingError("malformed_header")
             headers[key.lower()] = value.strip()
         return status, headers
 
@@ -211,18 +254,18 @@ class TikTokImageDownloader:
         length = headers.get("content-length")
         transfer_encoding = headers.get("transfer-encoding")
         if transfer_encoding is not None and length is not None:
-            raise MediaNotFound("TikTok image response is invalid")
+            raise _ImageFramingError("ambiguous_message_length")
         if transfer_encoding is not None and transfer_encoding.lower() != "chunked":
-            raise MediaNotFound("TikTok image response is invalid")
+            raise _ImageFramingError("unsupported_transfer_encoding")
         if transfer_encoding is None and length is None:
-            raise MediaNotFound("TikTok image response is invalid")
+            raise _ImageFramingError("missing_message_length")
         if length is not None:
             try:
                 if not length.isascii() or not length.isdecimal():
                     raise ValueError
                 expected = int(length)
             except ValueError:
-                raise MediaNotFound("TikTok image response is invalid") from None
+                raise _ImageFramingError("invalid_content_length") from None
             if expected < 1 or expected > self.max_bytes:
                 raise MediaNotFound("TikTok image exceeds archive size limit")
         total = 0
@@ -241,7 +284,7 @@ class TikTokImageDownloader:
                                 raise ValueError
                             chunk_size = int(size_token, 16)
                         except ValueError:
-                            raise MediaNotFound("TikTok image response is invalid") from None
+                            raise _ImageFramingError("invalid_chunk_framing") from None
                         if chunk_size == 0:
                             await self._read_trailers(reader)
                             break
@@ -253,7 +296,7 @@ class TikTokImageDownloader:
                             remaining -= len(chunk)
                             total = self._write_chunk(file, chunk, total)
                         if await self._read_exactly(reader, 2) != b"\r\n":
-                            raise MediaNotFound("TikTok image response is invalid")
+                            raise _ImageFramingError("invalid_chunk_framing")
                 else:
                     remaining = expected
                     while remaining:
@@ -277,10 +320,12 @@ class TikTokImageDownloader:
         try:
             async with asyncio.timeout(self.timeout_seconds):
                 line = await reader.readline()
+        except TimeoutError:
+            raise _ImageResponseError("body_timeout") from None
         except Exception:
             raise SourceUnavailable("TikTok image response failed") from None
         if not line.endswith(b"\r\n") or len(line) > maximum:
-            raise MediaNotFound("TikTok image response is invalid")
+            raise _ImageFramingError("invalid_chunk_framing")
         return line
 
     async def _read_trailers(self, reader) -> None:
@@ -290,22 +335,22 @@ class TikTokImageDownloader:
             line = await self._readline(reader, self._MAX_CHUNK_LINE_BYTES)
             total += len(line)
             if total > self._MAX_TRAILER_BYTES:
-                raise MediaNotFound("TikTok image response is invalid")
+                raise _ImageFramingError("invalid_chunk_framing")
             if line == b"\r\n":
                 return
             if line[:1] in {b" ", b"\t"} or b":" not in line:
-                raise MediaNotFound("TikTok image response is invalid")
+                raise _ImageFramingError("invalid_chunk_framing")
             key, value = line[:-2].split(b":", 1)
             try:
                 name = key.decode("ascii").lower()
             except UnicodeDecodeError:
-                raise MediaNotFound("TikTok image response is invalid") from None
+                raise _ImageFramingError("invalid_chunk_framing") from None
             if (not self._valid_header_name(name) or name in names
                     or name in {"content-length", "transfer-encoding"}
                     or any(byte < 0x20 and byte != 0x09 for byte in value)):
-                raise MediaNotFound("TikTok image response is invalid")
+                raise _ImageFramingError("invalid_chunk_framing")
             names.add(name)
-        raise MediaNotFound("TikTok image response is invalid")
+        raise _ImageFramingError("invalid_chunk_framing")
 
     @classmethod
     def _valid_header_name(cls, value: str) -> bool:
@@ -315,6 +360,10 @@ class TikTokImageDownloader:
         try:
             async with asyncio.timeout(self.timeout_seconds):
                 return await reader.readexactly(size)
+        except asyncio.IncompleteReadError:
+            raise _ImageResponseError("truncated_body") from None
+        except TimeoutError:
+            raise _ImageResponseError("body_timeout") from None
         except Exception:
             raise SourceUnavailable("TikTok image response failed") from None
 
