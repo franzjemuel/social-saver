@@ -14,6 +14,15 @@ class ProfilePhotoDeliveryFailure(TerminalProviderError):
         super().__init__("Archived photos could not be sent to Telegram")
 
 
+class ProfilePhotoDeliveryUnconfirmed(ProfilePhotoDeliveryFailure):
+    """A previous Telegram request may have been accepted, but lacks a receipt."""
+
+    notify_user = False
+
+    def __init__(self):
+        TerminalProviderError.__init__(self, "Archived photo delivery could not be confirmed")
+
+
 async def process_deliver_profile_photos(job, repo, bot, storage=None, delivery=None):
     """Deliver one complete persisted photo set to the verified owner's bot DM."""
     payload = job["input"] or {}
@@ -55,7 +64,27 @@ async def process_deliver_profile_photos(job, repo, bot, storage=None, delivery=
                 if not path.is_file() or path.stat().st_size < 1:
                     raise ProfilePhotoDeliveryFailure()
                 files.append(("photo", path))
-            await delivery.send_files(job["telegram_chat_id"], files)
+            attempt = await repo.claim_profile_photo_delivery_attempt(
+                job["id"], job["user_id"], profile_id, post_id,
+            )
+            if attempt == "confirmed":
+                return {"sent": len(files), "batches": 1, "recovered": True}
+            if attempt != "claimed":
+                # A timeout/crash after a prior call can be indistinguishable
+                # from Telegram accepting it. Never resend automatically.
+                raise ProfilePhotoDeliveryUnconfirmed()
+            try:
+                await delivery.send_files(job["telegram_chat_id"], files)
+            except Exception:
+                raise ProfilePhotoDeliveryUnconfirmed() from None
+            try:
+                confirmed = await repo.confirm_profile_photo_delivery_attempt(
+                    job["id"], job["user_id"], profile_id, post_id,
+                )
+            except Exception:
+                raise ProfilePhotoDeliveryUnconfirmed() from None
+            if not confirmed:
+                raise ProfilePhotoDeliveryUnconfirmed()
         except ProfilePhotoDeliveryFailure:
             raise
         except Exception:

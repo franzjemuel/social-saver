@@ -822,6 +822,66 @@ class Repository:
             return []
         return rows
 
+    async def claim_profile_photo_delivery_attempt(self, job_id, user_id, profile_id, post_id):
+        """Atomically reserve the one Telegram side effect for a delivery job.
+
+        Telegram's send APIs do not offer a caller-supplied idempotency key. The
+        durable marker therefore provides a bounded at-most-once policy: an
+        unconfirmed prior attempt is never resent automatically. A confirmed
+        attempt may be safely completed after a worker crash without another
+        Telegram call.
+        """
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                claimed = await con.fetchval(
+                    """update jobs
+                       set input=jsonb_set(
+                             input, '{telegram_delivery_attempted_at}',
+                             to_jsonb(now()::text), true
+                           )
+                       where id=$1::uuid and user_id=$2 and job_type='deliver_profile_photos'
+                         and status='running'
+                         and input->>'profile_id'=$3::uuid::text
+                         and input->>'post_id'=$4::uuid::text
+                         and not (input ? 'telegram_delivery_attempted_at')
+                       returning true""",
+                    job_id, user_id, profile_id, post_id,
+                )
+                if claimed:
+                    return "claimed"
+                row = await con.fetchrow(
+                    """select input ? 'telegram_delivery_attempted_at' as attempted,
+                              input ? 'telegram_delivery_confirmed_at' as confirmed
+                       from jobs
+                       where id=$1::uuid and user_id=$2 and job_type='deliver_profile_photos'
+                         and input->>'profile_id'=$3::uuid::text
+                         and input->>'post_id'=$4::uuid::text""",
+                    job_id, user_id, profile_id, post_id,
+                )
+        if row is None:
+            return None
+        if row["confirmed"]:
+            return "confirmed"
+        if row["attempted"]:
+            return "attempted"
+        return None
+
+    async def confirm_profile_photo_delivery_attempt(self, job_id, user_id, profile_id, post_id):
+        """Persist Bot API acknowledgement before the outer job is completed."""
+        return bool(await self.pool.fetchval(
+            """update jobs
+               set input=jsonb_set(
+                     input, '{telegram_delivery_confirmed_at}', to_jsonb(now()::text), true
+                   )
+               where id=$1::uuid and user_id=$2 and job_type='deliver_profile_photos'
+                 and status='running'
+                 and input->>'profile_id'=$3::uuid::text
+                 and input->>'post_id'=$4::uuid::text
+                 and input ? 'telegram_delivery_attempted_at'
+               returning true""",
+            job_id, user_id, profile_id, post_id,
+        ))
+
     async def list_owned_archived_video_assets(self, user_id, profile_id, post_id=None):
         """Worker acquisition candidates, always rechecked against tenant ownership."""
         return await self.pool.fetch(

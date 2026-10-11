@@ -8,10 +8,13 @@ from fastapi import HTTPException
 import apps.api.main as api
 from apps.worker.processors.profile_photo_delivery import (
     ProfilePhotoDeliveryFailure,
+    ProfilePhotoDeliveryUnconfirmed,
     process_deliver_profile_photos,
 )
 from core.repository import ProfileMediaJob
 from core.telegram_delivery import TelegramDelivery
+from apps.worker.main import complete_terminal_failure
+from providers.base import TerminalProviderError
 
 
 PROFILE = UUID("11111111-1111-1111-1111-111111111111")
@@ -26,6 +29,12 @@ class DeliveryRepo:
     async def list_owned_complete_profile_photo_delivery_assets(self, user_id, profile_id, post_id):
         self.calls.append((user_id, profile_id, post_id))
         return self.assets
+
+    async def claim_profile_photo_delivery_attempt(self, *_):
+        return "claimed"
+
+    async def confirm_profile_photo_delivery_attempt(self, *_):
+        return True
 
 
 class Storage:
@@ -98,6 +107,98 @@ async def test_storage_or_telegram_failures_are_terminal_and_sanitized():
             DeliveryRepo(assets), bot=object(), storage=BrokenStorage(), delivery=Delivery(),
         )
     assert "private" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_telegram_response_is_not_retried_or_reported_as_sent():
+    assets = [{"position": 0, "storage_key": "private/one", "size_bytes": 5, "content_type": "image/jpeg"}]
+
+    class AttemptRepo(DeliveryRepo):
+        def __init__(self):
+            super().__init__(assets)
+            self.state = "new"
+
+        async def claim_profile_photo_delivery_attempt(self, *_):
+            if self.state == "new":
+                self.state = "attempted"
+                return "claimed"
+            return self.state
+
+    class AmbiguousDelivery(Delivery):
+        async def send_files(self, chat_id, files):
+            await super().send_files(chat_id, files)
+            raise RuntimeError("provider response body with private fields")
+
+    repo, storage, delivery = AttemptRepo(), Storage(), AmbiguousDelivery()
+    job = {"id": "job", "user_id": "tenant", "telegram_chat_id": 123,
+           "input": {"profile_id": str(PROFILE), "post_id": str(POST), "asset_count": 1}}
+    with pytest.raises(ProfilePhotoDeliveryUnconfirmed) as error:
+        await process_deliver_profile_photos(job, repo, bot=object(), storage=storage, delivery=delivery)
+    assert "private" not in str(error.value)
+    with pytest.raises(ProfilePhotoDeliveryUnconfirmed):
+        await process_deliver_profile_photos(job, repo, bot=object(), storage=storage, delivery=delivery)
+    assert len(delivery.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_post_send_crash_is_at_most_once_and_confirmed_attempt_can_finish_without_resend():
+    assets = [{"position": 0, "storage_key": "private/one", "size_bytes": 5, "content_type": "image/jpeg"}]
+
+    class CrashAfterSendRepo(DeliveryRepo):
+        def __init__(self):
+            super().__init__(assets)
+            self.state = "new"
+
+        async def claim_profile_photo_delivery_attempt(self, *_):
+            if self.state == "new":
+                self.state = "attempted"
+                return "claimed"
+            return self.state
+
+        async def confirm_profile_photo_delivery_attempt(self, *_):
+            raise SystemExit("synthetic worker crash after Telegram acceptance")
+
+    repo, delivery = CrashAfterSendRepo(), Delivery()
+    job = {"id": "job", "user_id": "tenant", "telegram_chat_id": 123,
+           "input": {"profile_id": str(PROFILE), "post_id": str(POST), "asset_count": 1}}
+    with pytest.raises(SystemExit):
+        await process_deliver_profile_photos(job, repo, bot=object(), storage=Storage(), delivery=delivery)
+    with pytest.raises(ProfilePhotoDeliveryUnconfirmed):
+        await process_deliver_profile_photos(job, repo, bot=object(), storage=Storage(), delivery=delivery)
+    assert len(delivery.calls) == 1
+
+    class ConfirmedRepo(DeliveryRepo):
+        async def claim_profile_photo_delivery_attempt(self, *_):
+            return "confirmed"
+
+    recovered = await process_deliver_profile_photos(
+        job, ConfirmedRepo(assets), bot=object(), storage=Storage(), delivery=Delivery(),
+    )
+    assert recovered == {"sent": 1, "batches": 1, "recovered": True}
+
+
+@pytest.mark.asyncio
+async def test_terminal_error_notification_failure_does_not_prevent_queue_cleanup():
+    calls = []
+
+    class Repo:
+        async def fail_job(self, *args):
+            calls.append(("failed", args))
+
+    class Queue:
+        async def archive(self, message_id):
+            calls.append(("archived", message_id))
+
+    class BlockedBot:
+        async def send_message(self, *_):
+            raise RuntimeError("bot blocked")
+
+    await complete_terminal_failure(
+        Repo(), Queue(), BlockedBot(), {"msg_id": 99}, "job", {"telegram_chat_id": 123},
+        TerminalProviderError("safe failure"),
+    )
+    assert calls[0][0] == "failed"
+    assert calls[1] == ("archived", 99)
 
 
 @pytest.mark.asyncio

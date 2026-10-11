@@ -50,6 +50,20 @@ async def dead_letter(db, queue, repo, msg, job_id, exc):
     await queue.send_dead_letter(payload)
     await queue.archive(msg["msg_id"])
 
+
+async def complete_terminal_failure(repo, queue, bot, msg, job_id, job, exc):
+    """Persist and archive terminal jobs even when their courtesy notice fails."""
+    code = type(exc).__name__.upper()
+    await repo.fail_job(job_id, code, str(exc))
+    if getattr(exc, "notify_user", True):
+        try:
+            await bot.send_message(job["telegram_chat_id"], f"❌ {str(exc)}")
+        except Exception:
+            # A blocked/deleted Telegram DM must not strand an already-terminal
+            # queue message or retry its original provider/storage work.
+            pass
+    await queue.archive(msg["msg_id"])
+
 async def main():
     init_observability("media-worker")
     db = Database(settings.database_url); await db.connect()
@@ -154,10 +168,7 @@ async def main():
                     await bot.send_message(job["telegram_chat_id"], success_message)
                 await queue.archive(msg["msg_id"])
             except TerminalProviderError as exc:
-                code = type(exc).__name__.upper()
-                await repo.fail_job(job_id, code, str(exc))
-                await bot.send_message(job["telegram_chat_id"], f"❌ {str(exc)}")
-                await queue.archive(msg["msg_id"])
+                await complete_terminal_failure(repo, queue, bot, msg, job_id, job, exc)
             except TikTokProfileValidationFailure as exc:
                 # Validation errors are rendered through the Mini App status API;
                 # do not expose provider details or send an unrelated bot message.

@@ -216,6 +216,12 @@ async def test_profile_photo_delivery_job_is_owned_complete_and_coalesced(databa
     assert len(matches) == 1
     await queue.archive(matches[0]['msg_id'])
 
+    await repo.start_job(first.id)
+    assert await repo.claim_profile_photo_delivery_attempt(first.id, owner, profile, post) == "claimed"
+    assert await repo.confirm_profile_photo_delivery_attempt(first.id, owner, profile, post) is True
+    assert await repo.claim_profile_photo_delivery_attempt(first.id, owner, profile, post) == "confirmed"
+    await repo.complete_job(first.id, {"sent": 2})
+
     rows = await repo.list_owned_complete_profile_photo_delivery_assets(owner, profile, post)
     assert [row["position"] for row in rows] == [0, 1]
     assert await repo.list_owned_complete_profile_photo_delivery_assets(other, profile, post) == []

@@ -202,6 +202,13 @@ Updated for v3.8.
 - This candidate is intentionally not hosted acceptance evidence. It does not
   support partial sets, WebP conversion, carousels over ten images, browser ZIP
   downloads, or cross-chat native sharing.
+- Telegram does not accept a caller idempotency key for `sendPhoto` or
+  `sendMediaGroup`. Before the worker makes that side effect it writes an
+  internal attempt marker; an unconfirmed marker is never automatically resent.
+  A confirmed marker lets a retry complete the job without another send. This is
+  a bounded at-most-once policy, not exactly-once delivery: a crash between
+  Telegram acceptance and durable confirmation may leave delivery unknown and
+  requires an explicit user retry after review.
 
 ## Staged TikTok image framing diagnostics — pending review
 
