@@ -175,6 +175,43 @@ async def test_image_downloader_rejects_ambiguous_or_malformed_http_framing(tmp_
 
 
 @pytest.mark.asyncio
+async def test_image_downloader_falls_back_after_invalid_http_framing(tmp_path):
+    """A strict framing rejection consumes only that bounded candidate."""
+    image = _jpeg_bytes()
+    attempted = []
+
+    async def resolve(host, _):
+        attempted.append(host)
+        return ("8.8.8.8",) if host == "first.example.invalid" else ("1.1.1.1",)
+
+    async def connect(ip, *_args, **_kwargs):
+        if ip == "8.8.8.8":
+            # Duplicate Content-Length is deliberately rejected before image
+            # validation; the next provider candidate must still be attempted.
+            return _reader(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n"
+                b"Content-Length: 1\r\n\r\nx",
+            ), _Writer((ip, 443))
+        return _reader(
+            b"HTTP/1.1 200 OK\r\nContent-Length: "
+            + str(len(image)).encode()
+            + b"\r\n\r\n"
+            + image,
+        ), _Writer((ip, 443))
+
+    downloader = TikTokImageDownloader(resolve=resolve, open_connection=connect)
+    result = await downloader.download_asset(
+        ("https://first.example.invalid/image", "https://second.example.invalid/image"),
+        tmp_path / "image",
+    )
+
+    assert attempted == ["first.example.invalid", "second.example.invalid"]
+    assert result.content_type == "image/jpeg"
+    assert result.path.read_bytes() == image
+    assert not (tmp_path / "image.candidate").exists()
+
+
+@pytest.mark.asyncio
 async def test_image_downloader_requires_crlf_after_each_chunk_and_accepts_valid_chunked_jpeg(tmp_path):
     image = _jpeg_bytes()
 
