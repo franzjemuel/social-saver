@@ -125,7 +125,7 @@ class TikTokImageDownloader:
                     await writer.drain()
                 status, headers = await self._read_headers(reader)
                 if status in {301, 302, 303, 307, 308}:
-                    location = headers.get("location")
+                    location = self._single_header(headers, "location", "ambiguous_redirect")
                     if not location:
                         raise SourceUnavailable("TikTok image redirect failed")
                     url = urljoin(url, location)
@@ -234,6 +234,9 @@ class TikTokImageDownloader:
             raise _ImageFramingError("invalid_status_line") from None
         if version != "HTTP/1.1" or not 100 <= status <= 599:
             raise _ImageFramingError("invalid_status_line")
+        # Preserve repeated response fields. HTTP permits several non-framing
+        # fields (notably Set-Cookie) to repeat, while framing and redirect
+        # decisions below still require exactly one unambiguous value.
         headers = {}
         for line in lines[1:]:
             if not line:
@@ -243,16 +246,14 @@ class TikTokImageDownloader:
             key, value = line.split(":", 1)
             if not self._valid_header_name(key):
                 raise _ImageFramingError("malformed_header")
-            if key.lower() in headers:
-                raise _ImageFramingError("duplicate_header")
             if any(ord(character) < 0x20 and character != "\t" for character in value):
                 raise _ImageFramingError("malformed_header")
-            headers[key.lower()] = value.strip()
+            headers.setdefault(key.lower(), []).append(value.strip())
         return status, headers
 
     async def _copy_body(self, reader, headers, destination: Path) -> None:
-        length = headers.get("content-length")
-        transfer_encoding = headers.get("transfer-encoding")
+        length = self._single_header(headers, "content-length", "ambiguous_message_length")
+        transfer_encoding = self._single_header(headers, "transfer-encoding", "ambiguous_message_length")
         if transfer_encoding is not None and length is not None:
             raise _ImageFramingError("ambiguous_message_length")
         if transfer_encoding is not None and transfer_encoding.lower() != "chunked":
@@ -308,6 +309,15 @@ class TikTokImageDownloader:
             os.replace(temporary, destination)
         finally:
             temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _single_header(headers, name: str, reason_code: str) -> str | None:
+        values = headers.get(name)
+        if values is None:
+            return None
+        if len(values) != 1:
+            raise _ImageFramingError(reason_code)
+        return values[0]
 
     def _write_chunk(self, file, chunk: bytes, total: int) -> int:
         total += len(chunk)
