@@ -186,6 +186,16 @@ Updated for v3.8.
 - This backend contract does not add a frontend image viewer, browser-triggered
   acquisition, or hosted photo playback acceptance.
 
+## Staged TikTok image framing diagnostics — pending review
+
+- A review-only diagnostic increment adds safe worker events for HTTP framing
+  rejections: an opaque correlation value, provider, candidate attempt, and a
+  bounded reason code. It never logs acquisition URLs, response headers or
+  bodies, cookies, or credentials.
+- The strict parser, bounded candidate fallback, retry behavior, and
+  customer-facing error strings are unchanged. No hosted retry or deployment
+  has been performed for this diagnostic increment.
+
 ## Manual TikTok profile sync — 2026-10-06
 
 - Added a worker-owned, tenant-scoped manual sync queue and safe status projection.

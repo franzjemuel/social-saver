@@ -175,6 +175,43 @@ async def test_image_downloader_rejects_ambiguous_or_malformed_http_framing(tmp_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("payload", "reason"), [
+    (b"HTTP/1.1 200 OK\r\nBroken Header\r\n\r\n", "malformed_header"),
+    (
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+        b"Content-Length: 1\r\n\r\n1\r\nx\r\n0\r\n\r\n",
+        "ambiguous_message_length",
+    ),
+    (b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nxx", "truncated_body"),
+    (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\n0\r\n\r\n", "invalid_chunk_framing"),
+])
+async def test_image_downloader_logs_sanitized_framing_diagnostics(tmp_path, caplog, payload, reason):
+    async def resolve(_, __):
+        return ("8.8.8.8",)
+
+    async def connect(*_, **__):
+        return _reader(payload), _Writer(("8.8.8.8", 443))
+
+    downloader = TikTokImageDownloader(resolve=resolve, open_connection=connect)
+    candidate = "https://private-candidate.example.invalid/image"
+    with pytest.raises((MediaNotFound, SourceUnavailable)) as error:
+        await downloader.download_asset((candidate,), tmp_path / "opaque-asset.image")
+
+    assert str(error.value) in {
+        "TikTok image response is invalid",
+        "TikTok image response failed",
+        "TikTok image download failed",
+    }
+    assert f"framing_reason={reason}" in caplog.text
+    assert "provider=tiktok" in caplog.text
+    assert "candidate_attempt=1" in caplog.text
+    assert "correlation_id=" in caplog.text
+    assert candidate not in caplog.text
+    assert "Content-Length" not in caplog.text
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
 async def test_image_downloader_falls_back_after_invalid_http_framing(tmp_path):
     """A strict framing rejection consumes only that bounded candidate."""
     image = _jpeg_bytes()
