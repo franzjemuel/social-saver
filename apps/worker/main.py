@@ -17,6 +17,7 @@ from apps.worker.processors.profile_import_validation import process_validate_pr
 from apps.worker.processors.profile_import import process_import_profile, TikTokProfileImportFailure
 from apps.worker.processors.profile_sync import process_sync_profile, TikTokProfileSyncFailure
 from apps.worker.processors.profile_full_sync import process_full_sync_profile, TikTokProfileFullSyncFailure
+from apps.worker.processors.profile_photo_delivery import process_deliver_profile_photos
 from providers.tiktok.validation import TikTokProfileValidationFailure
 from core.observability import init_observability, capture_job_exception
 from core.rate_limits import provider_concurrency
@@ -125,6 +126,9 @@ async def main():
                 elif job["job_type"] == "archive_profile_media":
                     async with provider_concurrency.for_platform("tiktok"):
                         result = await process_archive_profile_media(job, repo)
+                    success_message = None
+                elif job["job_type"] == "deliver_profile_photos":
+                    result = await process_deliver_profile_photos(job, repo, bot)
                     success_message = None
                 elif job["job_type"] == "validate_profile_import":
                     async with provider_concurrency.for_platform("tiktok"):

@@ -53,6 +53,17 @@
 - [ ] Build Add Profile UI (input, preview/confirm, and progress) in the frontend; existing archive browse/detail and playback remain separate.
 - [ ] Add frontend video-backup/progress controls and later bounded resumable larger-history batches. See `docs/profile-archive-media-next-steps.md` for photo/carousel, rescan/removal, and historical-engagement design.
 - [ ] Add a Mini App control that calls the prepared-message endpoint and then Telegram's native `shareMessage`, followed by one bounded hosted sharing acceptance.
+- [ ] Review and, if approved, ship worker-owned owner-DM delivery for one complete
+  archived TikTok photo set (1–10 JPEG/PNG positions) using `sendPhoto` or
+  `sendMediaGroup`; perform one bounded hosted acceptance without provider reacquisition.
+- [ ] Add direct Save Photo via a short-lived tenant-authorized attachment download,
+  preferring Telegram Mini App `downloadFile` where supported and a non-persistent
+  browser fallback otherwise.
+- [ ] Add ordered Save Carousel ZIP creation in a worker, with a short-lived
+  tenant-authorized download and no browser-side mass signing.
+- [ ] Design explicit >10 carousel batching, original-quality document delivery,
+  durable bot-chat authorization, delivery receipts/idempotency, and optional
+  future cross-chat sharing before expanding owner-DM photo delivery.
 - [ ] Facebook provider adapter after Instagram launch gate.
 - [ ] Facebook Stories through existing watch/archive contracts.
 

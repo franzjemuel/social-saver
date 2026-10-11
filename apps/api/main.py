@@ -560,6 +560,11 @@ class ProfileArchiveShareResponse(BaseModel):
     expires_at: int | None = None
 
 
+class ProfilePhotoDeliveryResponse(BaseModel):
+    job_id: str
+    status: str = "queued"
+
+
 def _profile_video_download_filename(platform: str, platform_post_id: str) -> str:
     """Build a conservative attachment filename from server-owned identifiers."""
     safe_platform = re.sub(r"[^A-Za-z0-9_-]", "", platform)[:24] or "video"
@@ -776,6 +781,40 @@ async def profile_archive_photo_asset_playback(
         playback_url=url,
         expires_in=settings.archive_presign_seconds,
     )
+
+
+@app.post(
+    "/v1/profile-archives/{profile_id}/posts/{post_id}/send-photos-to-telegram",
+    response_model=ProfilePhotoDeliveryResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def send_archived_photos_to_telegram(profile_id: str, post_id: str, identity=Depends(current_identity)):
+    """Queue one complete owned carousel for delivery to the verified owner's bot DM."""
+    if _repo is None or _queue is None or _abuse is None or _entitlements is None:
+        raise HTTPException(status_code=503, detail="archive_photo_delivery_unavailable")
+    try:
+        profile = UUID(profile_id)
+        post = UUID(post_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="profile_archive_not_found") from None
+    user_id = identity["app_user_id"]
+    plan = await _entitlements.plan_for(user_id)
+    limit = await _abuse.check(user_id, plan)
+    if not limit.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="rate_limited",
+            headers={"Retry-After": str(max(1, int(limit.reset - time.time())))},
+        )
+    job = await _repo.create_owned_profile_photo_delivery_job(
+        user_id, identity["telegram_user_id"], profile, post,
+        queue_name=_queue.queue_name,
+    )
+    if job is None:
+        # The same response covers a foreign/missing post and incomplete or
+        # unsupported archive state, avoiding a cross-tenant ownership oracle.
+        raise HTTPException(status_code=404, detail="profile_archive_not_found")
+    return ProfilePhotoDeliveryResponse(job_id=str(job.id))
 
 
 @app.post("/v1/profile-archives/{profile_id}/posts/{post_id}/download",

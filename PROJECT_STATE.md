@@ -186,6 +186,23 @@ Updated for v3.8.
 - This backend contract does not add a frontend image viewer, browser-triggered
   acquisition, or hosted photo playback acceptance.
 
+## Owner Telegram delivery of archived photos — candidate, not hosted
+
+- The proposed first delivery slice queues a tenant-owned worker job for one
+  **complete** persisted TikTok photo set of 1–10 JPEG/PNG positions. The worker
+  reads private R2 objects into a temporary directory and uses Telegram's native
+  `sendPhoto` (one image) or `sendMediaGroup` (2–10 images), retaining carousel
+  order. It never gives the browser a storage key, provider URL, signed URL, or
+  destination chat ID.
+- The destination is derived from the server-verified Telegram Mini App identity,
+  as with existing worker deliveries. This repository has no separate durable
+  bot-DM authorization table; a Bot API refusal (for example, the user has not
+  started the bot) is a sanitized terminal job failure. Introducing a durable
+  bot-chat authorization record requires a later migration and review.
+- This candidate is intentionally not hosted acceptance evidence. It does not
+  support partial sets, WebP conversion, carousels over ten images, browser ZIP
+  downloads, or cross-chat native sharing.
+
 ## Staged TikTok image framing diagnostics — pending review
 
 - A review-only diagnostic increment adds safe worker events for HTTP framing

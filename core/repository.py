@@ -735,6 +735,93 @@ class Repository:
                     )
         return ProfileMediaJob(row["id"], row["created"]) if row else None
 
+    async def create_owned_profile_photo_delivery_job(
+        self, user_id, chat_id, profile_id, post_id, *, queue_name=None,
+    ):
+        """Atomically queue delivery of one complete owned carousel to its owner.
+
+        This first delivery slice deliberately accepts only complete 1--10 image
+        sets. The browser never supplies a Telegram chat or storage identifier;
+        both are derived from the verified identity and owned archive rows.
+        """
+        lock_key = f"profile-photo-delivery:{user_id}:{profile_id}:{post_id}"
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                await con.execute("select pg_advisory_xact_lock(hashtextextended($1, 0))", lock_key)
+                row = await con.fetchrow(
+                    """with owned_post as (
+                         select post.id
+                         from archived_posts post
+                         join archived_profiles profile on profile.id=post.archived_profile_id
+                         where profile.id=$3::uuid and profile.user_id=$1 and post.id=$4::uuid
+                           and post.media_type in ('photo','carousel')
+                       ), complete_carousel as (
+                         select owned_post.id, count(asset.id)::integer as total,
+                                count(object.id)::integer as available
+                         from owned_post
+                         join archived_post_media_assets asset
+                           on asset.archived_post_id=owned_post.id and asset.asset_type='photo'
+                         left join stored_objects object
+                           on object.id=asset.stored_object_id and object.deleted_at is null
+                         group by owned_post.id
+                         having count(asset.id) between 1 and 10 and count(asset.id)=count(object.id)
+                       ), active_job as (
+                         select job.id
+                         from jobs job join complete_carousel target on true
+                         where job.user_id=$1 and job.job_type='deliver_profile_photos'
+                           and job.status in ('queued','running')
+                           and job.input->>'profile_id'=$3::uuid::text
+                           and job.input->>'post_id'=$4::uuid::text
+                         order by job.created_at limit 1 for update
+                       ), created_job as (
+                         insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel)
+                         select $1,$2,'deliver_profile_photos',
+                                jsonb_build_object('profile_id',$3::uuid,'post_id',$4::uuid,
+                                                   'asset_count',target.total),
+                                'mini_app'
+                         from complete_carousel target
+                         where not exists(select 1 from active_job)
+                         returning id
+                       )
+                       select id, true as created from created_job
+                       union all
+                       select id, false as created from active_job
+                       limit 1""",
+                    user_id, chat_id, profile_id, post_id,
+                )
+                if row and row["created"] and queue_name:
+                    await con.fetchval(
+                        "select * from pgmq.send($1, jsonb_build_object('version',1,'job_id',$2::text),0)",
+                        queue_name, str(row["id"]),
+                    )
+        return ProfileMediaJob(row["id"], row["created"]) if row else None
+
+    async def list_owned_complete_profile_photo_delivery_assets(self, user_id, profile_id, post_id):
+        """Worker-only ordered R2 targets for a complete owner delivery.
+
+        Acquisition URLs, object IDs, and hashes do not leave this repository
+        boundary. An empty result is deliberately ambiguous for foreign,
+        missing, incomplete, and unavailable archive state.
+        """
+        rows = await self.pool.fetch(
+            """select asset.position, object.storage_key, object.size_bytes, object.content_type
+               from archived_posts post
+               join archived_profiles profile on profile.id=post.archived_profile_id
+               join archived_post_media_assets asset
+                 on asset.archived_post_id=post.id and asset.asset_type='photo'
+               join stored_objects object on object.id=asset.stored_object_id and object.deleted_at is null
+               where profile.id=$1::uuid and profile.user_id=$2 and post.id=$3::uuid
+                 and post.media_type in ('photo','carousel')
+               order by asset.position asc""",
+            profile_id, user_id, post_id,
+        )
+        if not rows or len(rows) > 10:
+            return []
+        positions = [row["position"] for row in rows]
+        if len(set(positions)) != len(positions):
+            return []
+        return rows
+
     async def list_owned_archived_video_assets(self, user_id, profile_id, post_id=None):
         """Worker acquisition candidates, always rechecked against tenant ownership."""
         return await self.pool.fetch(
