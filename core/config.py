@@ -4,6 +4,8 @@ class Settings(BaseSettings):
     telegram_bot_token: str
     database_url: str
     app_env: str = "development"
+    # Published Mini App root; override via TELEGRAM_MINI_APP_URL per environment.
+    telegram_mini_app_url: str = "https://social-story-saver.lovable.app"
     log_level: str = "INFO"
     port: int = 8080
     api_cors_origins: str = ""
