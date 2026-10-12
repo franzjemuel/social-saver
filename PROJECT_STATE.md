@@ -49,6 +49,10 @@ Updated for v3.8.
   feature is off. Safe aggregate checkpoints are written after every committed
   collection, so a later database failure projects retained progress as
   partial failure without leaking provider details.
+- Provider aggregate counters determine completed-job outcomes even for an
+  empty snapshot set: failed-only observations are `failed`, incomplete-only
+  observations are `incomplete`, and an empty successful discovery is
+  `complete`.
 
 ## Profile archive foundation — 2026-10-04
 

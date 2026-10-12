@@ -194,6 +194,32 @@ async def test_partial_failure_preserves_prior_collections_and_projects_honest_o
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "expected_outcome"),
+    [
+        (HighlightDiscoveryResult((), failed_collections=1), "failed"),
+        (HighlightDiscoveryResult((), incomplete_collections=1), "incomplete"),
+        (HighlightDiscoveryResult(()), "complete"),
+    ],
+)
+async def test_zero_snapshot_discovery_projects_provider_aggregate_outcome(result, expected_outcome):
+    repo = Repo()
+    provider = Provider(result)
+
+    summary = await process_sync_profile_highlights(
+        {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}},
+        repo,
+        provider,
+        Scanner(),
+        True,
+    )
+
+    assert summary["collections_observed"] == 0
+    assert summary["outcome"] == expected_outcome
+    assert not [entry for entry in repo.calls if entry[0] == "reconcile"]
+
+
+@pytest.mark.asyncio
 async def test_worker_disabled_gate_makes_no_scanner_provider_or_claim_call():
     class ExplosiveScanner:
         def resolve_profile(self, _username):

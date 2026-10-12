@@ -32,6 +32,17 @@ class DisabledProfileHighlightsProvider(ProfileHighlightsDiscoveryProvider):
         raise TikTokProfileHighlightSyncFailure("highlights_provider_disabled")
 
 
+def _discovery_outcome(
+    snapshot_count: int, incomplete_collections: int, failed_collections: int,
+) -> str:
+    """Project provider aggregate state even when it returned no snapshots."""
+    if failed_collections:
+        return "partial_failure" if snapshot_count else "failed"
+    if incomplete_collections:
+        return "incomplete"
+    return "complete"
+
+
 def _validate_discovery_result(result: object) -> tuple:
     """Validate the whole response before any collection can be persisted."""
     if not isinstance(result, HighlightDiscoveryResult):
@@ -121,7 +132,10 @@ async def process_sync_profile_highlights(
         "collections_observed": len(snapshots), "collections_created": 0,
         "collections_refreshed": 0, "collections_incomplete": result.incomplete_collections,
         "collections_failed": result.failed_collections, "memberships_created": 0,
-        "memberships_refreshed": 0, "outcome": "complete",
+        "memberships_refreshed": 0,
+        "outcome": _discovery_outcome(
+            len(snapshots), result.incomplete_collections, result.failed_collections,
+        ),
     }
     for index, snapshot in enumerate(snapshots, start=1):
         try:
@@ -149,8 +163,9 @@ async def process_sync_profile_highlights(
             collections_refreshed=collections_refreshed,
             memberships_created=memberships_created,
             memberships_refreshed=memberships_refreshed,
-            outcome=("partial_failure" if result.failed_collections else
-                     "incomplete" if result.incomplete_collections else "complete"),
+            outcome=_discovery_outcome(
+                len(snapshots), result.incomplete_collections, result.failed_collections,
+            ),
         )
         await repo.update_profile_highlight_sync_checkpoint(
             job["id"], summary, 35 + (60 * index // max(1, len(snapshots))),
