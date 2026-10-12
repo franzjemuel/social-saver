@@ -1,5 +1,8 @@
 from dataclasses import dataclass
+from datetime import datetime
+from math import isfinite
 
+from providers.base import ArchivedHighlightCollectionSnapshot, ArchivedHighlightStoryMembership
 from providers.tiktok.constants import INITIAL_PROFILE_IMPORT_POST_LIMIT
 
 
@@ -30,6 +33,83 @@ class ProfileImportJob:
 
 class ProfileImportIdempotencyConflict(ValueError):
     """One client retry key cannot be reused for a different profile target."""
+
+
+class HighlightSnapshotValidationError(ValueError):
+    """A provider snapshot is structurally unsafe to persist."""
+
+
+@dataclass(frozen=True)
+class HighlightCollectionReconciliation:
+    collection_id: object
+    collection_created: bool
+    memberships_created: int
+    memberships_refreshed: int
+    observation_complete: bool
+
+
+_MAX_HIGHLIGHT_SNAPSHOT_MEMBERSHIPS = 1_000
+
+
+def _require_highlight_identifier(value, field_name):
+    if not isinstance(value, str) or not value or len(value) > 512:
+        raise HighlightSnapshotValidationError(f"invalid {field_name}")
+
+
+def _validate_highlight_snapshot(snapshot: ArchivedHighlightCollectionSnapshot) -> None:
+    if not isinstance(snapshot, ArchivedHighlightCollectionSnapshot):
+        raise HighlightSnapshotValidationError("invalid Highlight snapshot")
+    _require_highlight_identifier(snapshot.provider_namespace, "provider namespace")
+    if len(snapshot.provider_namespace) > 128:
+        raise HighlightSnapshotValidationError("invalid provider namespace")
+    _require_highlight_identifier(snapshot.provider_collection_id, "collection identifier")
+    if snapshot.title is not None and (not isinstance(snapshot.title, str) or len(snapshot.title) > 10_000):
+        raise HighlightSnapshotValidationError("invalid collection title")
+    if snapshot.reported_item_count is not None and (
+        isinstance(snapshot.reported_item_count, bool)
+        or not isinstance(snapshot.reported_item_count, int)
+        or snapshot.reported_item_count < 0
+    ):
+        raise HighlightSnapshotValidationError("invalid reported item count")
+    if not isinstance(snapshot.has_cover_descriptor, bool) or not isinstance(snapshot.observation_complete, bool):
+        raise HighlightSnapshotValidationError("invalid collection observation")
+    if len(snapshot.memberships) > _MAX_HIGHLIGHT_SNAPSHOT_MEMBERSHIPS:
+        raise HighlightSnapshotValidationError("too many Highlight memberships")
+
+    item_ids: set[str] = set()
+    positions: set[int] = set()
+    for membership in snapshot.memberships:
+        if not isinstance(membership, ArchivedHighlightStoryMembership):
+            raise HighlightSnapshotValidationError("invalid Highlight membership")
+        if membership.provider_namespace != snapshot.provider_namespace:
+            raise HighlightSnapshotValidationError("membership provider namespace mismatch")
+        _require_highlight_identifier(membership.provider_item_id, "membership identifier")
+        if (
+            isinstance(membership.provider_position, bool)
+            or not isinstance(membership.provider_position, int)
+            or membership.provider_position < 0
+            or membership.provider_position in positions
+        ):
+            raise HighlightSnapshotValidationError("invalid or duplicate provider position")
+        if not isinstance(membership.media_type, str) or not membership.media_type or len(membership.media_type) > 64:
+            raise HighlightSnapshotValidationError("invalid membership media type")
+        if membership.caption is not None and (not isinstance(membership.caption, str) or len(membership.caption) > 10_000):
+            raise HighlightSnapshotValidationError("invalid membership caption")
+        if membership.published_at is not None and not isinstance(membership.published_at, datetime):
+            raise HighlightSnapshotValidationError("invalid membership publication time")
+        if membership.duration_seconds is not None and (
+            isinstance(membership.duration_seconds, bool)
+            or not isinstance(membership.duration_seconds, (int, float))
+            or not isfinite(membership.duration_seconds)
+            or membership.duration_seconds < 0
+        ):
+            raise HighlightSnapshotValidationError("invalid membership duration")
+        if not isinstance(membership.has_media_descriptor, bool) or not isinstance(membership.has_cover_descriptor, bool):
+            raise HighlightSnapshotValidationError("invalid membership descriptor flags")
+        if membership.provider_item_id in item_ids:
+            raise HighlightSnapshotValidationError("duplicate membership identifier")
+        item_ids.add(membership.provider_item_id)
+        positions.add(membership.provider_position)
 
 
 class Repository:
@@ -574,6 +654,162 @@ class Repository:
                             asset.height, asset.metadata,
                         )
         return inserted
+
+    async def reconcile_owned_highlight_collection_snapshot(
+        self,
+        user_id,
+        archived_profile_id,
+        snapshot: ArchivedHighlightCollectionSnapshot,
+    ) -> HighlightCollectionReconciliation:
+        """Atomically upsert one validated collection snapshot for its owner.
+
+        This foundation intentionally never marks a collection or membership
+        absent. Provider count equality is useful diagnostic metadata, not proof
+        that a provider returned a complete upstream view. Later reconciliation
+        can use the retained presence fields after its own evidence threshold.
+        """
+        _validate_highlight_snapshot(snapshot)
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                owned = await con.fetchval(
+                    """select id from archived_profiles
+                       where id=$1::uuid and user_id=$2 for update""",
+                    archived_profile_id,
+                    user_id,
+                )
+                if owned is None:
+                    raise PermissionError("Archived profile not found")
+                collection = await con.fetchrow(
+                    """insert into archived_highlight_collections
+                         (archived_profile_id,provider_namespace,provider_collection_id,title,
+                          reported_item_count,has_cover_descriptor,last_snapshot_complete,
+                          last_complete_observed_at,is_present_on_original,last_absent_at)
+                       values($1::uuid,$2,$3,$4,$5,$6,$7,
+                              case when $7 then now() else null end,true,null)
+                       on conflict(archived_profile_id,provider_namespace,provider_collection_id)
+                       do update set
+                         title=coalesce(excluded.title, archived_highlight_collections.title),
+                         reported_item_count=coalesce(excluded.reported_item_count,
+                                                      archived_highlight_collections.reported_item_count),
+                         has_cover_descriptor=excluded.has_cover_descriptor,
+                         last_snapshot_complete=excluded.last_snapshot_complete,
+                         last_observed_at=now(),
+                         last_complete_observed_at=case
+                           when excluded.last_snapshot_complete then now()
+                           else archived_highlight_collections.last_complete_observed_at
+                         end,
+                         is_present_on_original=true,
+                         last_absent_at=null
+                       returning id, (xmax = 0) as created""",
+                    archived_profile_id,
+                    snapshot.provider_namespace,
+                    snapshot.provider_collection_id,
+                    snapshot.title,
+                    snapshot.reported_item_count,
+                    snapshot.has_cover_descriptor,
+                    snapshot.observation_complete,
+                )
+                created = refreshed = 0
+                for membership in snapshot.memberships:
+                    row = await con.fetchrow(
+                        """insert into archived_highlight_story_memberships
+                             (archived_highlight_collection_id,provider_namespace,provider_item_id,
+                              provider_position,media_type,caption,published_at,duration_seconds,
+                              has_media_descriptor,has_cover_descriptor,is_present_on_original,last_absent_at)
+                           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,null)
+                           on conflict(archived_highlight_collection_id,provider_namespace,provider_item_id)
+                           do update set
+                             provider_position=excluded.provider_position,
+                             media_type=excluded.media_type,
+                             caption=coalesce(excluded.caption,
+                                              archived_highlight_story_memberships.caption),
+                             published_at=coalesce(excluded.published_at,
+                                                   archived_highlight_story_memberships.published_at),
+                             duration_seconds=coalesce(excluded.duration_seconds,
+                                                       archived_highlight_story_memberships.duration_seconds),
+                             has_media_descriptor=excluded.has_media_descriptor,
+                             has_cover_descriptor=excluded.has_cover_descriptor,
+                             last_observed_at=now(),
+                             is_present_on_original=true,
+                             last_absent_at=null
+                           returning (xmax = 0) as created""",
+                        collection["id"],
+                        membership.provider_namespace,
+                        membership.provider_item_id,
+                        membership.provider_position,
+                        membership.media_type,
+                        membership.caption,
+                        membership.published_at,
+                        membership.duration_seconds,
+                        membership.has_media_descriptor,
+                        membership.has_cover_descriptor,
+                    )
+                    if row["created"]:
+                        created += 1
+                    else:
+                        refreshed += 1
+                return HighlightCollectionReconciliation(
+                    collection_id=collection["id"],
+                    collection_created=bool(collection["created"]),
+                    memberships_created=created,
+                    memberships_refreshed=refreshed,
+                    observation_complete=snapshot.observation_complete,
+                )
+
+    async def list_owned_archived_highlight_collections(self, user_id, archived_profile_id, *, limit=50, offset=0):
+        """Safe collection metadata only; missing and foreign profiles both return None."""
+        if not 1 <= limit <= 100 or offset < 0:
+            raise ValueError("invalid highlight collection pagination")
+        owned = await self.pool.fetchval(
+            "select id from archived_profiles where id=$1::uuid and user_id=$2",
+            archived_profile_id,
+            user_id,
+        )
+        if owned is None:
+            return None
+        return await self.pool.fetch(
+            """select id,provider_namespace,provider_collection_id,title,reported_item_count,
+                      has_cover_descriptor,last_snapshot_complete,first_archived_at,last_observed_at,
+                      last_complete_observed_at,last_absent_at,is_present_on_original
+               from archived_highlight_collections
+               where archived_profile_id=$1::uuid
+               order by first_archived_at, id
+               limit $2::integer offset $3::integer""",
+            archived_profile_id,
+            limit,
+            offset,
+        )
+
+    async def list_owned_archived_highlight_memberships(
+        self, user_id, archived_profile_id, collection_id, *, limit=100, offset=0,
+    ):
+        """Safe observed membership metadata ordered by provider_position only."""
+        if not 1 <= limit <= 100 or offset < 0:
+            raise ValueError("invalid highlight membership pagination")
+        owned = await self.pool.fetchval(
+            """select collection.id
+               from archived_highlight_collections collection
+               join archived_profiles profile on profile.id=collection.archived_profile_id
+               where profile.id=$1::uuid and profile.user_id=$2 and collection.id=$3::uuid""",
+            archived_profile_id,
+            user_id,
+            collection_id,
+        )
+        if owned is None:
+            return None
+        return await self.pool.fetch(
+            """select id,provider_namespace,provider_item_id,provider_position,media_type,
+                      caption,published_at,duration_seconds,has_media_descriptor,
+                      has_cover_descriptor,first_archived_at,last_observed_at,last_absent_at,
+                      is_present_on_original
+               from archived_highlight_story_memberships
+               where archived_highlight_collection_id=$1::uuid
+               order by provider_position, first_archived_at, id
+               limit $2::integer offset $3::integer""",
+            collection_id,
+            limit,
+            offset,
+        )
 
     async def create_owned_profile_full_sync_job(self, user_id, chat_id, profile_id, *, queue_name):
         """Atomically queue one tenant-owned full-history metadata sync."""

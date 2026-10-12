@@ -2,6 +2,17 @@
 
 Updated for v3.8.
 
+## TikTok Profile Highlights metadata foundation — pending review
+
+- Added provider-neutral, tenant-private collection and Story-membership schema
+  records. Provider identifiers are explicitly namespaced and observed order is
+  retained only as `provider_position`; it is not asserted TikTok-native.
+- Snapshot persistence is atomic per validated collection and idempotently
+  refreshes known memberships or their observed position. Missing memberships
+  are deliberately retained and never marked absent by this foundation.
+- This adds no API route, worker dispatch, provider token, paid call, media
+  acquisition, R2 attachment, automatic job, or deployment behavior.
+
 ## Profile archive foundation — 2026-10-04
 
 - Added a provider-neutral, tenant-private profile archive schema: profiles,
