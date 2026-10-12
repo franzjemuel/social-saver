@@ -43,6 +43,12 @@ Updated for v3.8.
   complete, incomplete, and partial-failure collection observations; retained
   earlier collections are never rolled back merely because a later collection
   failed to enumerate.
+- The worker independently checks the same disabled-by-default server flag
+  before scanner resolution, provider selection, or its execution latch. A
+  stale queued message therefore cannot cause any external request while the
+  feature is off. Safe aggregate checkpoints are written after every committed
+  collection, so a later database failure projects retained progress as
+  partial failure without leaking provider details.
 
 ## Profile archive foundation — 2026-10-04
 

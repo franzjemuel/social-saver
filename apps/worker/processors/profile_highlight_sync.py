@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import replace
 import asyncio
 
+from core.config import settings
 from core.repository import HighlightSnapshotValidationError, validate_highlight_snapshot
 from providers.base import HighlightDiscoveryResult, ProfileHighlightsDiscoveryProvider
 from providers.tiktok.scanner import TikTokProfileScanner
@@ -71,7 +72,15 @@ def _validate_discovery_result(result: object) -> tuple:
 
 async def process_sync_profile_highlights(
     job, repo, provider: ProfileHighlightsDiscoveryProvider | None = None, scanner=None,
+    execution_enabled: bool | None = None,
 ):
+    # A previously queued job must still fail closed while the server-owned
+    # feature flag is off; do this before scanner/provider network activity or
+    # consuming the durable execution claim.
+    if execution_enabled is None:
+        execution_enabled = settings.tiktok_highlights_sync_enabled
+    if not execution_enabled:
+        raise TikTokProfileHighlightSyncFailure("highlights_feature_disabled")
     payload = job.get("input") or {}
     profile_id = payload.get("profile_id")
     if not isinstance(profile_id, str):
@@ -108,27 +117,43 @@ async def process_sync_profile_highlights(
     snapshots = _validate_discovery_result(result)
     await repo.update_job_progress(job["id"], 35)
     collections_created = collections_refreshed = memberships_created = memberships_refreshed = 0
+    summary = {
+        "collections_observed": len(snapshots), "collections_created": 0,
+        "collections_refreshed": 0, "collections_incomplete": result.incomplete_collections,
+        "collections_failed": result.failed_collections, "memberships_created": 0,
+        "memberships_refreshed": 0, "outcome": "complete",
+    }
     for index, snapshot in enumerate(snapshots, start=1):
-        reconciliation = await repo.reconcile_owned_highlight_collection_snapshot(
-            job["user_id"], profile_id, snapshot,
-        )
+        try:
+            reconciliation = await repo.reconcile_owned_highlight_collection_snapshot(
+                job["user_id"], profile_id, snapshot,
+            )
+        except Exception as exc:
+            summary.update(
+                collections_created=collections_created,
+                collections_refreshed=collections_refreshed,
+                memberships_created=memberships_created,
+                memberships_refreshed=memberships_refreshed,
+                outcome="partial_failure" if index > 1 else "failed",
+            )
+            await repo.update_profile_highlight_sync_checkpoint(
+                job["id"], summary, 35 + (60 * (index - 1) // max(1, len(snapshots))),
+            )
+            raise TikTokProfileHighlightSyncFailure("highlights_reconciliation_failed") from exc
         collections_created += int(reconciliation.collection_created)
         collections_refreshed += int(not reconciliation.collection_created)
         memberships_created += reconciliation.memberships_created
         memberships_refreshed += reconciliation.memberships_refreshed
-        await repo.update_job_progress(job["id"], 35 + (60 * index // max(1, len(snapshots))))
+        summary.update(
+            collections_created=collections_created,
+            collections_refreshed=collections_refreshed,
+            memberships_created=memberships_created,
+            memberships_refreshed=memberships_refreshed,
+            outcome=("partial_failure" if result.failed_collections else
+                     "incomplete" if result.incomplete_collections else "complete"),
+        )
+        await repo.update_profile_highlight_sync_checkpoint(
+            job["id"], summary, 35 + (60 * index // max(1, len(snapshots))),
+        )
 
-    return {
-        "collections_observed": len(snapshots),
-        "collections_created": collections_created,
-        "collections_refreshed": collections_refreshed,
-        "collections_incomplete": result.incomplete_collections,
-        "collections_failed": result.failed_collections,
-        "memberships_created": memberships_created,
-        "memberships_refreshed": memberships_refreshed,
-        "outcome": (
-            "partial_failure" if result.failed_collections else
-            "incomplete" if result.incomplete_collections else
-            "complete"
-        ),
-    }
+    return summary

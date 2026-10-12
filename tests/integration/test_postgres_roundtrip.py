@@ -16,11 +16,16 @@ import pytest_asyncio
 from core.database import Database
 from core.queue import JobQueue
 from core.repository import ProfileImportIdempotencyConflict, Repository
+from apps.worker.processors.profile_highlight_sync import (
+    TikTokProfileHighlightSyncFailure,
+    process_sync_profile_highlights,
+)
 from providers.base import (
     ArchiveMediaAsset,
     ArchivedHighlightCollectionSnapshot,
     ArchivedHighlightStoryMembership,
     ArchivedPost,
+    HighlightDiscoveryResult,
 )
 from ops import staging_canary
 
@@ -621,6 +626,63 @@ async def test_profile_highlight_sync_jobs_are_tenant_safe_atomic_and_coalesced(
              and input->>'profile_id'=$2::uuid::text""",
         owner, rollback_profile,
     ) == 0
+
+
+async def test_profile_highlight_sync_persists_safe_checkpoint_after_later_collection_database_failure(database):
+    """The first committed collection remains observable when a later one fails."""
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','highlight-sync-checkpoint','owner') returning id""", owner,
+    )
+    job_id = await repo.create_job(
+        owner, 1, 'sync_profile_highlights', {'profile_id': str(profile)}, source_channel='mini_app',
+    )
+    await repo.start_job(job_id)
+
+    class Scanner:
+        class Profile:
+            username = 'owner'
+            user_id = 'highlight-sync-checkpoint'
+
+        def resolve_profile(self, _username):
+            return self.Profile()
+
+    class Provider:
+        async def discover_highlights(self, _username):
+            return HighlightDiscoveryResult((
+                _highlight_snapshot('first', (_highlight_membership('first-item', 0),)),
+                _highlight_snapshot('fail', (_highlight_membership('second-item', 0),)),
+            ))
+
+    await database.pool.execute("""
+        create function fail_one_highlight_collection() returns trigger language plpgsql as $$
+        begin
+          if new.provider_collection_id = 'fail' then raise exception 'synthetic later collection failure'; end if;
+          return new;
+        end; $$;
+        create trigger fail_one_highlight_collection
+        before insert on archived_highlight_collections
+        for each row execute function fail_one_highlight_collection();
+    """)
+    try:
+        with pytest.raises(TikTokProfileHighlightSyncFailure) as exc:
+            await process_sync_profile_highlights(
+                {'id': job_id, 'user_id': owner, 'input': {'profile_id': str(profile)}},
+                repo, Provider(), Scanner(), True,
+            )
+        assert exc.value.code == 'highlights_reconciliation_failed'
+        checkpoint = await repo.get_owned_profile_highlight_sync(owner, job_id)
+        assert checkpoint['checkpoint']['outcome'] == 'partial_failure'
+        assert checkpoint['checkpoint']['collections_created'] == 1
+        assert checkpoint['checkpoint']['memberships_created'] == 1
+        assert await database.pool.fetchval(
+            "select count(*) from archived_highlight_collections where archived_profile_id=$1", profile,
+        ) == 1
+    finally:
+        await database.pool.execute('drop trigger fail_one_highlight_collection on archived_highlight_collections')
+        await database.pool.execute('drop function fail_one_highlight_collection()')
 
 
 def _highlight_membership(item_id, position, *, namespace='apify:tiktok-highlights'):

@@ -980,7 +980,7 @@ class Repository:
     async def get_owned_profile_highlight_sync(self, user_id, job_id):
         """Safe job row only for its owning tenant; foreign and absent are None."""
         return await self.pool.fetchrow(
-            """select id,status,progress,result,error_code from jobs
+            """select id,status,progress,result,error_code,input->'highlight_sync_checkpoint' as checkpoint from jobs
                where id=$1::uuid and user_id=$2 and job_type='sync_profile_highlights'""",
             job_id, user_id,
         )
@@ -1019,6 +1019,15 @@ class Repository:
                     job_id,
                 )
                 return True
+
+    async def update_profile_highlight_sync_checkpoint(self, job_id, checkpoint, progress):
+        """Persist safe aggregate progress after each committed collection."""
+        await self.pool.execute(
+            """update jobs set input=jsonb_set(input,'{highlight_sync_checkpoint}',$2::jsonb,true),
+                       progress=$3
+               where id=$1::uuid and job_type='sync_profile_highlights' and status='running'""",
+            job_id, checkpoint, progress,
+        )
 
     async def get_owned_profile_sync(self, user_id, job_id):
         return await self.pool.fetchrow("""select id,status,progress,result,error_code from jobs

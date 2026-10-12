@@ -70,6 +70,9 @@ class Repo:
     async def update_job_progress(self, *args):
         self.calls.append(("progress", args))
 
+    async def update_profile_highlight_sync_checkpoint(self, *args):
+        self.calls.append(("checkpoint", args))
+
     async def reconcile_owned_highlight_collection_snapshot(self, *_args):
         self.calls.append(("reconcile", _args))
         item_count = len(_args[-1].memberships)
@@ -103,7 +106,7 @@ async def test_synthetic_highlight_sync_reconciles_validated_collections_only():
         snapshot("two", (membership("same-story", 0),), complete=False),
     ), incomplete_collections=1))
     result = await process_sync_profile_highlights(
-        {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, Scanner(),
+        {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, Scanner(), True,
     )
     assert provider.calls == 1
     assert result == {
@@ -129,7 +132,7 @@ async def test_invalid_discovery_never_mutates_any_collection(result):
     provider = Provider(result)
     with pytest.raises(TikTokProfileHighlightSyncFailure) as exc:
         await process_sync_profile_highlights(
-            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, Scanner(),
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, Scanner(), True,
         )
     assert exc.value.code == "highlights_invalid_response"
     assert not [entry for entry in repo.calls if entry[0] == "reconcile"]
@@ -141,7 +144,7 @@ async def test_redelivery_claim_never_repeats_provider_execution():
     provider = Provider(HighlightDiscoveryResult(()))
     with pytest.raises(TikTokProfileHighlightSyncFailure) as exc:
         await process_sync_profile_highlights(
-            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, Scanner(),
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, Scanner(), True,
         )
     assert exc.value.code == "highlights_execution_indeterminate"
     assert provider.calls == 0
@@ -152,7 +155,7 @@ async def test_disabled_provider_has_no_live_or_fixture_fallback():
     repo = Repo()
     with pytest.raises(TikTokProfileHighlightSyncFailure) as exc:
         await process_sync_profile_highlights(
-            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, scanner=Scanner(),
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, scanner=Scanner(), execution_enabled=True,
         )
     assert exc.value.code == "highlights_provider_disabled"
     assert not [entry for entry in repo.calls if entry[0] == "reconcile"]
@@ -169,7 +172,7 @@ async def test_identity_mismatch_rejects_before_provider_claim_or_persistence():
     provider = Provider(HighlightDiscoveryResult(()))
     with pytest.raises(TikTokProfileHighlightSyncFailure) as exc:
         await process_sync_profile_highlights(
-            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, WrongScanner(),
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, WrongScanner(), True,
         )
     assert exc.value.code == "profile_changed"
     assert provider.calls == 0
@@ -183,11 +186,58 @@ async def test_partial_failure_preserves_prior_collections_and_projects_honest_o
         (snapshot("one", (membership("a", 0),)),), failed_collections=1,
     ))
     result = await process_sync_profile_highlights(
-        {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, Scanner(),
+        {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, Scanner(), True,
     )
     assert result["outcome"] == "partial_failure"
     assert result["collections_failed"] == 1
     assert len([entry for entry in repo.calls if entry[0] == "reconcile"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_disabled_gate_makes_no_scanner_provider_or_claim_call():
+    class ExplosiveScanner:
+        def resolve_profile(self, _username):
+            raise AssertionError("scanner must not run while disabled")
+
+    repo = Repo()
+    provider = Provider(HighlightDiscoveryResult(()))
+    with pytest.raises(TikTokProfileHighlightSyncFailure) as exc:
+        await process_sync_profile_highlights(
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}},
+            repo, provider, ExplosiveScanner(), False,
+        )
+    assert exc.value.code == "highlights_feature_disabled"
+    assert provider.calls == 0
+    assert repo.calls == []
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_failure_keeps_safe_checkpoint_for_committed_prior_collections():
+    class FailingRepo(Repo):
+        def __init__(self):
+            super().__init__()
+            self.reconciles = 0
+
+        async def reconcile_owned_highlight_collection_snapshot(self, *_args):
+            self.reconciles += 1
+            if self.reconciles == 2:
+                raise RuntimeError("private database detail")
+            return await super().reconcile_owned_highlight_collection_snapshot(*_args)
+
+    repo = FailingRepo()
+    provider = Provider(HighlightDiscoveryResult((
+        snapshot("one", (membership("a", 0),)), snapshot("two", (membership("b", 0),)),
+    )))
+    with pytest.raises(TikTokProfileHighlightSyncFailure) as exc:
+        await process_sync_profile_highlights(
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, Scanner(), True,
+        )
+    assert exc.value.code == "highlights_reconciliation_failed"
+    checkpoint = [args[1] for name, args in repo.calls if name == "checkpoint"][-1]
+    assert checkpoint["outcome"] == "partial_failure"
+    assert checkpoint["collections_created"] == 1
+    assert checkpoint["memberships_created"] == 1
+    assert "private" not in str(checkpoint)
 
 
 @pytest.mark.asyncio
