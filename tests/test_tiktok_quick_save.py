@@ -76,8 +76,8 @@ class FakeDelivery:
         self.calls = []
         self.ambiguous = ambiguous
 
-    async def send_files(self, chat, files, caption=None):
-        self.calls.append((chat, [(kind, path.name, Path(path).read_bytes()) for kind, path in files], caption))
+    async def send_files(self, chat, files, caption=None, *, video_metadata=None):
+        self.calls.append((chat, [(kind, path.name, Path(path).read_bytes()) for kind, path in files], caption, video_metadata))
         if self.ambiguous:
             raise RuntimeError("secret Telegram payload")
         return [SimpleNamespace(message_id=123)]
@@ -315,3 +315,56 @@ def test_bot_routes_short_share_links_without_resolving_them_in_the_handler():
     assert "normalize_tiktok_quick_save_url(text)" in source
     assert '"tiktok_quick_save"' in source
     assert "resolve_tiktok_quick_save_url" not in source
+
+
+
+@pytest.mark.asyncio
+async def test_quick_save_forwards_real_probe_metadata_without_reencoding():
+    from core.video_metadata import VideoMetadata
+    meta = VideoMetadata(width=576, height=1024, duration=8)
+    repo, downloader, delivery = FakeRepo(), FakeDownloader(), FakeDelivery()
+    result = await process_tiktok_quick_save(
+        JOB, repo, object(),
+        downloader=downloader, delivery=delivery,
+        probe=lambda path: meta,
+    )
+    assert result["platform"] == "tiktok"
+    assert delivery.calls[0][3] == meta
+    assert delivery.calls[0][1][0] == ("video", "video.mp4", b"valid-mocked-mp4")
+    assert len(repo.claims) == 1
+
+
+@pytest.mark.asyncio
+async def test_probe_failure_preserves_legacy_video_delivery_before_claim():
+    repo, downloader, delivery = FakeRepo(), FakeDownloader(), FakeDelivery()
+
+    def cannot_probe(path):
+        raise RuntimeError("metadata failure")
+
+    await process_tiktok_quick_save(
+        JOB, repo, object(),
+        downloader=downloader, delivery=delivery, probe=cannot_probe,
+    )
+    assert delivery.calls[0][3] is None
+    assert len(repo.claims) == 1
+
+
+@pytest.mark.asyncio
+async def test_short_url_and_direct_url_feed_same_telegram_video_metadata():
+    from core.video_metadata import VideoMetadata
+
+    async def resolver(value):
+        return SHARE_TARGET
+
+    meta = VideoMetadata(width=576, height=1024, duration=8)
+    deliveries = []
+    for source in (SHARE_URL, SHARE_TARGET):
+        delivery = FakeDelivery()
+        await process_tiktok_quick_save(
+            {**JOB, "input": {"url": source}},
+            FakeRepo(), object(),
+            downloader=FakeDownloader(), delivery=delivery,
+            resolver=resolver, probe=lambda path: meta,
+        )
+        deliveries.append(delivery.calls[0][3])
+    assert deliveries == [meta, meta]
