@@ -1,6 +1,7 @@
 # Backlog
 
 ## P0 launch blockers
+- [ ] Diagnose portrait vs square TikTok native Telegram quick-save playback: compare ffprobe MP4 geometry, short file fingerprints, and Telegram receipt dimensions with one controlled direct/short link pair after reviewed staging release.
 - [ ] Validate real TikTok app short-share URL -> worker redirect -> native forwardable Telegram MP4 in staging; do not count offline fixture tests as hosted acceptance.
 - [x] Create persistent GitHub repository (`franzjemuel/social-saver`).
 - [ ] Provision staging Telegram bot/token.
