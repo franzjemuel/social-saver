@@ -32,6 +32,9 @@ Updated for v3.8.
   and an explicit manual command before a paid metadata-only run.
 - This does not establish that identifiers or ordering are TikTok-native,
   durable, lawful for product use, or suitable for production dependency.
+- Authorized metadata-only POC runs resolved two named collections and a
+  25-item Story collection with unique ordered records and video metadata.
+  No archive, worker, database, R2, or media-download path was enabled.
 
 ## Profile archive read API — 2026-10-05
 

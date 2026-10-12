@@ -88,7 +88,7 @@ async def test_live_call_is_gated_before_network(monkeypatch):
 async def test_documented_apify_payload_and_normalized_discovery(monkeypatch):
     monkeypatch.setenv("SOCIAL_SAVER_HIGHLIGHTS_POC_LIVE", "1")
     def handler(request):
-        assert request.url.path.endswith("igview-owner~tiktok-highlight-scraper/run-sync-get-dataset-items")
+        assert request.url.path.endswith("25j9k3sawJYKrKL2X/run-sync-get-dataset-items")
         assert request.headers["authorization"] == "Bearer private-token"
         assert request.url.params["maxTotalChargeUsd"] == "0.10"
         assert request.url.params["timeout"] == "120"
@@ -198,7 +198,7 @@ async def test_manual_command_dry_run_needs_no_token_or_network(monkeypatch):
     })())
     assert result == {
         "dry_run": True,
-        "actor": "igview-owner~tiktok-highlight-scraper",
+        "actor": "25j9k3sawJYKrKL2X",
         "payload": {"mode": "highlight_list", "uniqueIds": ["example_user"]},
         "max_charge_usd": 0.10,
     }

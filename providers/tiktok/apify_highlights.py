@@ -22,7 +22,8 @@ from providers.base import SourceUnavailable, UnsupportedUrl
 from providers.tiktok.provider import normalize_tiktok_profile_target
 
 
-ACTOR_ID = "igview-owner~tiktok-highlight-scraper"
+# Stable Apify resource ID validated by the manually authorized POC runs.
+ACTOR_ID = "25j9k3sawJYKrKL2X"
 TOKEN_ENV = "APIFY_TIKTOK_HIGHLIGHTS_TOKEN"
 LIVE_GATE_ENV = "SOCIAL_SAVER_HIGHLIGHTS_POC_LIVE"
 MAX_POSTS_PER_PAGE = 30

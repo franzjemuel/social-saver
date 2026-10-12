@@ -1,7 +1,8 @@
 # TikTok Highlights Apify discovery POC
 
 This is an isolated, manually invoked evaluation of the community-maintained
-Apify Actor `igview-owner/tiktok-highlight-scraper`. It is not part of the API,
+Apify Actor resource `25j9k3sawJYKrKL2X` (published as
+`igview-owner/tiktok-highlight-scraper`). It is not part of the API,
 worker, profile importer, database schema, or automatic rescan pipeline.
 
 ## Published Actor contract evaluated
@@ -18,6 +19,25 @@ The Actor documents two input modes:
 
 Collection and item IDs are **provider-returned identifiers**. They are not
 claimed to be TikTok-native or durable until repeated live runs establish that.
+
+## Confirmed authorized live POC results
+
+One authorized, metadata-only experiment completed successfully for
+`theyuh_lvsh`. Collection discovery returned two named collections: `💗`
+(reported 44 Stories) and `ako` (reported 25 Stories). The provider-returned
+collection identifiers were retained only for this POC assessment.
+
+One authorized enumeration of the 25-item collection returned exactly 25
+unique Story records, with normalized positions 0 through 24 and no duplicate
+provider item identifiers. Each observed record was a video and included a
+media descriptor, cover descriptor, creation timestamp, and duration. The
+returned order appeared descending by creation date. The requested batch size
+was 10 while the flattened response contained 25 records; this confirms the
+provider returned more than the requested batch, but not its internal cursor
+mechanics or TikTok-native ordering.
+
+No raw provider response, token, signed media URL, or media byte was stored by
+the POC.
 
 ## Manual command
 
@@ -81,8 +101,8 @@ or raw responses. It never downloads media.
 - The published contract claims internal cursor pagination, but does not return
   cursor/page provenance in its dataset output.
 - A successful synchronous response has no final run receipt or charge total.
-  Cost-cap enforcement is documented by Apify, but this POC deliberately has
-  not spent money to independently verify this Actor's behavior at the cap.
+  Apify documents the budget cap and the POC sends it on every run, but one
+  deliberate over-limit experiment has not been authorized.
 - Photo ordering and upstream TikTok ordering are not proven by this POC.
 - CDN descriptors are retained only in memory for a future worker evaluation;
   no descriptor is persisted or exposed by this command.
