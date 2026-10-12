@@ -17,6 +17,7 @@ from apps.worker.processors.profile_import_validation import process_validate_pr
 from apps.worker.processors.profile_import import process_import_profile, TikTokProfileImportFailure
 from apps.worker.processors.profile_sync import process_sync_profile, TikTokProfileSyncFailure
 from apps.worker.processors.profile_full_sync import process_full_sync_profile, TikTokProfileFullSyncFailure
+from apps.worker.processors.profile_highlight_sync import process_sync_profile_highlights, TikTokProfileHighlightSyncFailure
 from apps.worker.processors.profile_photo_delivery import process_deliver_profile_photos
 from providers.tiktok.validation import TikTokProfileValidationFailure
 from core.observability import init_observability, capture_job_exception
@@ -160,6 +161,10 @@ async def main():
                     async with provider_concurrency.for_platform("tiktok"):
                         result = await process_full_sync_profile(job, repo)
                     success_message = None
+                elif job["job_type"] == "sync_profile_highlights":
+                    async with provider_concurrency.for_platform("tiktok"):
+                        result = await process_sync_profile_highlights(job, repo)
+                    success_message = None
                 else:
                     raise ValueError(f"Unknown job type: {job['job_type']}")
 
@@ -181,6 +186,11 @@ async def main():
                 await repo.fail_job(job_id, exc.code.upper(), exc.code)
                 await queue.archive(msg["msg_id"])
             except TikTokProfileFullSyncFailure as exc:
+                await repo.fail_job(job_id, exc.code.upper(), exc.code)
+                await queue.archive(msg["msg_id"])
+            except TikTokProfileHighlightSyncFailure as exc:
+                # Highlight metadata failures are Mini App status only.  Do
+                # not emit a bot notice that could itself strand queue cleanup.
                 await repo.fail_job(job_id, exc.code.upper(), exc.code)
                 await queue.archive(msg["msg_id"])
             except Exception as exc:

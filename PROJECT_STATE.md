@@ -2,7 +2,7 @@
 
 Updated for v3.8.
 
-## TikTok Profile Highlights metadata foundation — pending review
+## TikTok Profile Highlights metadata foundation — merged
 
 - Added provider-neutral, tenant-private collection and Story-membership schema
   records. Provider identifiers are explicitly namespaced and observed order is
@@ -19,6 +19,40 @@ Updated for v3.8.
   current ordering.
 - This adds no API route, worker dispatch, provider token, paid call, media
   acquisition, R2 attachment, automatic job, or deployment behavior.
+
+## TikTok Profile Highlights manual synchronization — synthetic-only review candidate
+
+- Adds a server-disabled-by-default, tenant-scoped manual Highlight-sync API and
+  worker job contract. When disabled, the API returns a safe not-found response
+  before it can enqueue work; no synthetic fixture or live provider is
+  registered in hosted code.
+- A job coalesces duplicate requests per tenant/profile inside the existing
+  transaction and PGMQ enqueue boundary. Before discovery it records one
+  durable execution claim; a redelivery after that claim is deliberately
+  terminal/indeterminate rather than silently repeating a future paid provider
+  request. This is not an exactly-once guarantee or a paid-Actor receipt.
+- Test-only injected synthetic providers validate complete response structure
+  before any collection reconciliation. They preserve provider positions,
+  can retain successful collections from an honestly incomplete response, and
+  never infer removals from missing memberships. Live Apify execution, provider
+  tokens, budgets, automatic polling, media acquisition, routes enabled for
+  customers, and deployment remain separate approval gates.
+- Before the worker claims provider execution it resolves the archived
+  username through the existing stable TikTok account scanner and rejects an
+  unavailable or mismatched identity. Completed safe results distinguish
+  complete, incomplete, and partial-failure collection observations; retained
+  earlier collections are never rolled back merely because a later collection
+  failed to enumerate.
+- The worker independently checks the same disabled-by-default server flag
+  before scanner resolution, provider selection, or its execution latch. A
+  stale queued message therefore cannot cause any external request while the
+  feature is off. Safe aggregate checkpoints are written after every committed
+  collection, so a later database failure projects retained progress as
+  partial failure without leaking provider details.
+- Provider aggregate counters determine completed-job outcomes even for an
+  empty snapshot set: failed-only observations are `failed`, incomplete-only
+  observations are `incomplete`, and an empty successful discovery is
+  `complete`.
 
 ## Profile archive foundation — 2026-10-04
 

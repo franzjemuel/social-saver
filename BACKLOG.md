@@ -50,7 +50,7 @@
 - [x] Add tenant-authenticated TikTok profile-target validation jobs and safe status previews for the future Add Profile flow.
 - [x] Add profile-import confirmation and bounded worker-owned TikTok metadata import after validation; do not imply full media persistence.
 - [x] Add manual worker-owned TikTok profile metadata sync with full-ID presence reconciliation and bounded enrichment; frontend Sync control remains pending.
-- [ ] Review the tenant-isolated TikTok Profile Highlights metadata foundation; a later explicitly authorized increment may add manual discovery jobs and safe read projections.
+- [ ] Review the synthetic-only, tenant-scoped TikTok Profile Highlights manual-sync candidate. A separately approved live-provider phase must add licensing, spend budgets, durable per-Actor invocation receipts, and safe metadata read projections before enabling the feature gate.
 - [ ] Build Add Profile UI (input, preview/confirm, and progress) in the frontend; existing archive browse/detail and playback remain separate.
 - [ ] Add frontend video-backup/progress controls and later bounded resumable larger-history batches. See `docs/profile-archive-media-next-steps.md` for photo/carousel, rescan/removal, and historical-engagement design.
 - [ ] Add a Mini App control that calls the prepared-message endpoint and then Telegram's native `shareMessage`, followed by one bounded hosted sharing acceptance.
