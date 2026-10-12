@@ -16,7 +16,12 @@ import pytest_asyncio
 from core.database import Database
 from core.queue import JobQueue
 from core.repository import ProfileImportIdempotencyConflict, Repository
-from providers.base import ArchiveMediaAsset, ArchivedPost
+from providers.base import (
+    ArchiveMediaAsset,
+    ArchivedHighlightCollectionSnapshot,
+    ArchivedHighlightStoryMembership,
+    ArchivedPost,
+)
 from ops import staging_canary
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -560,6 +565,209 @@ async def test_profile_sync_jobs_and_presence_reconciliation_are_tenant_safe(dat
     assert await database.pool.fetchval('select deleted_at is null from stored_objects where id=$1', object_id)
     posts = await repo.list_owned_archived_profile_posts(owner, profile)
     assert next(row for row in posts if row['platform_post_id'] == 'removed')['has_archived_media'] is True
+
+
+def _highlight_membership(item_id, position, *, namespace='apify:tiktok-highlights'):
+    return ArchivedHighlightStoryMembership(
+        provider_namespace=namespace,
+        provider_item_id=item_id,
+        provider_position=position,
+        media_type='video',
+        caption=f'caption-{item_id}',
+        has_media_descriptor=True,
+        has_cover_descriptor=True,
+    )
+
+
+_UNSET = object()
+
+
+def _highlight_snapshot(
+    collection_id, memberships=(), *, complete=True, reported_count=_UNSET, upstream_verified=False,
+):
+    return ArchivedHighlightCollectionSnapshot(
+        provider_namespace='apify:tiktok-highlights',
+        provider_collection_id=collection_id,
+        title=f'collection-{collection_id}',
+        reported_item_count=len(memberships) if reported_count is _UNSET else reported_count,
+        has_cover_descriptor=True,
+        observation_complete=complete,
+        memberships=tuple(memberships),
+        upstream_completeness_verified=upstream_verified,
+    )
+
+
+async def test_highlight_snapshots_are_tenant_safe_idempotent_and_non_destructive(database):
+    """Exercise the new collection/member uniqueness and observed-order contract."""
+    from core.repository import HighlightSnapshotValidationError
+
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval("""insert into archived_profiles
+        (user_id,platform,platform_account_id,username)
+        values($1,'tiktok','highlight-owner','owner') returning id""", owner)
+    other_profile = await database.pool.fetchval("""insert into archived_profiles
+        (user_id,platform,platform_account_id,username)
+        values($1,'tiktok','highlight-other','other') returning id""", other)
+
+    initial = _highlight_snapshot('collection-a', (
+        _highlight_membership('shared-item', 0),
+        _highlight_membership('second-item', 1),
+    ), upstream_verified=True)
+    first = await repo.reconcile_owned_highlight_collection_snapshot(owner, profile, initial)
+    assert first.collection_created is True
+    assert (first.memberships_created, first.memberships_refreshed) == (2, 0)
+    assert first.snapshot_complete is True
+    second = await repo.reconcile_owned_highlight_collection_snapshot(owner, profile, initial)
+    assert second.collection_created is False
+    assert (second.memberships_created, second.memberships_refreshed) == (0, 2)
+
+    collections = await repo.list_owned_archived_highlight_collections(owner, profile)
+    assert len(collections) == 1
+    collection_id = collections[0]['id']
+    assert collections[0]['last_snapshot_complete'] is True
+    assert collections[0]['last_snapshot_count_consistent'] is True
+    assert collections[0]['last_snapshot_provider_response_complete'] is True
+    assert collections[0]['last_snapshot_upstream_verified'] is True
+    assert {'source_url', 'storage_key', 'provider_response'} & set(collections[0]) == set()
+    assert await repo.list_owned_archived_highlight_collections(other, other_profile) == []
+    assert await repo.list_owned_archived_highlight_collections(other, profile) is None
+    assert await repo.list_owned_archived_highlight_collections(owner, uuid4()) is None
+    assert await repo.list_owned_archived_highlight_collections(owner, profile, offset=99) == []
+    assert await repo.list_owned_archived_highlight_memberships(other, profile, collection_id) is None
+    assert await repo.list_owned_archived_highlight_memberships(owner, profile, uuid4()) is None
+    assert await repo.list_owned_archived_highlight_memberships(owner, profile, collection_id, offset=99) == []
+    with pytest.raises(PermissionError):
+        await repo.reconcile_owned_highlight_collection_snapshot(other, profile, initial)
+
+    reordered_partial = _highlight_snapshot(
+        'collection-a',
+        (_highlight_membership('second-item', 0),),
+        complete=False,
+        reported_count=2,
+    )
+    await repo.reconcile_owned_highlight_collection_snapshot(owner, profile, reordered_partial)
+    memberships = await repo.list_owned_archived_highlight_memberships(owner, profile, collection_id)
+    positions = {row['provider_item_id']: row['provider_position'] for row in memberships}
+    assert positions == {'second-item': 0, 'shared-item': 0}
+    assert all(row['is_present_on_original'] for row in memberships)
+    assert {'source_url', 'storage_key', 'provider_response'} & set(memberships[0]) == set()
+    refreshed_collection = (await repo.list_owned_archived_highlight_collections(owner, profile))[0]
+    assert refreshed_collection['last_snapshot_complete'] is False
+    assert refreshed_collection['last_snapshot_count_consistent'] is False
+    assert refreshed_collection['last_absent_at'] is None
+    latest_snapshot_id = refreshed_collection['latest_snapshot_id']
+    observed_snapshot_ids = {row['provider_item_id']: row['last_observed_snapshot_id'] for row in memberships}
+    assert observed_snapshot_ids['second-item'] == latest_snapshot_id
+    assert observed_snapshot_ids['shared-item'] != latest_snapshot_id
+    latest_observed = {row['provider_item_id']: row['observed_in_latest_snapshot'] for row in memberships}
+    assert latest_observed == {'second-item': True, 'shared-item': False}
+
+    # A matching count is structural consistency, not independently verified
+    # upstream completeness. Neither response evidence alone is sufficient.
+    unverified = await repo.reconcile_owned_highlight_collection_snapshot(
+        owner,
+        profile,
+        _highlight_snapshot('unverified', (_highlight_membership('item', 0),), upstream_verified=False),
+    )
+    assert unverified.snapshot_complete is False
+    inconsistent = await repo.reconcile_owned_highlight_collection_snapshot(
+        owner,
+        profile,
+        _highlight_snapshot(
+            'inconsistent', (_highlight_membership('item', 0),), reported_count=2, upstream_verified=True,
+        ),
+    )
+    assert inconsistent.reported_count_consistent is False
+    assert inconsistent.snapshot_complete is False
+    completeness = {
+        row['provider_collection_id']: row
+        for row in await repo.list_owned_archived_highlight_collections(owner, profile)
+    }
+    assert completeness['unverified']['last_snapshot_count_consistent'] is True
+    assert completeness['unverified']['last_snapshot_provider_response_complete'] is True
+    assert completeness['unverified']['last_snapshot_upstream_verified'] is False
+    assert completeness['unverified']['last_snapshot_complete'] is False
+    assert completeness['inconsistent']['last_snapshot_count_consistent'] is False
+    assert completeness['inconsistent']['last_snapshot_complete'] is False
+
+    unknown_count = await repo.reconcile_owned_highlight_collection_snapshot(
+        owner,
+        profile,
+        _highlight_snapshot(
+            'unknown-count', (_highlight_membership('item', 0),), reported_count=None, upstream_verified=True,
+        ),
+    )
+    assert unknown_count.reported_count_consistent is False
+    assert unknown_count.snapshot_complete is False
+
+    empty_complete = await repo.reconcile_owned_highlight_collection_snapshot(
+        owner,
+        profile,
+        _highlight_snapshot('empty-complete', (), reported_count=0, upstream_verified=True),
+    )
+    assert empty_complete.reported_count_consistent is True
+    assert empty_complete.snapshot_complete is True
+
+    # An item may be in two collections without duplication inside either one.
+    second_collection = await repo.reconcile_owned_highlight_collection_snapshot(
+        owner,
+        profile,
+        _highlight_snapshot('collection-b', (_highlight_membership('shared-item', 0),)),
+    )
+    assert second_collection.memberships_created == 1
+    assert await database.pool.fetchval(
+        "select count(*) from archived_highlight_story_memberships where provider_item_id='shared-item'",
+    ) == 2
+    assert await repo.reconcile_owned_highlight_collection_snapshot(
+        other,
+        other_profile,
+        _highlight_snapshot('collection-a', (_highlight_membership('shared-item', 0),)),
+    )
+
+    malformed = _highlight_snapshot('malformed', (
+        _highlight_membership('duplicate', 0), _highlight_membership('duplicate', 1),
+    ))
+    before = await database.pool.fetchval('select count(*) from archived_highlight_collections')
+    with pytest.raises(HighlightSnapshotValidationError):
+        await repo.reconcile_owned_highlight_collection_snapshot(owner, profile, malformed)
+    assert await database.pool.fetchval('select count(*) from archived_highlight_collections') == before
+
+    empty = await repo.reconcile_owned_highlight_collection_snapshot(
+        owner, profile, _highlight_snapshot('empty', (), complete=True, reported_count=0),
+    )
+    assert empty.memberships_created == 0
+
+
+async def test_highlight_snapshot_database_failure_rolls_back_collection_and_memberships(database):
+    """Validation happens before the transaction; an in-transaction failure rolls it back."""
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval("""insert into archived_profiles
+        (user_id,platform,platform_account_id,username)
+        values($1,'tiktok','highlight-rollback','owner') returning id""", owner)
+    await database.pool.execute("""
+        create function fail_highlight_membership_insert() returns trigger language plpgsql as $$
+        begin raise exception 'synthetic membership insert failure'; end; $$;
+        create trigger fail_highlight_membership_insert
+        before insert on archived_highlight_story_memberships
+        for each row execute function fail_highlight_membership_insert();
+    """)
+    try:
+        with pytest.raises(asyncpg.RaiseError):
+            await repo.reconcile_owned_highlight_collection_snapshot(
+                owner,
+                profile,
+                _highlight_snapshot('rollback', (_highlight_membership('item', 0),)),
+            )
+        assert await database.pool.fetchval(
+            "select count(*) from archived_highlight_collections where archived_profile_id=$1",
+            profile,
+        ) == 0
+    finally:
+        await database.pool.execute('drop trigger fail_highlight_membership_insert on archived_highlight_story_memberships')
+        await database.pool.execute('drop function fail_highlight_membership_insert()')
 
 
 async def test_full_profile_sync_repository_indexes_109_resumes_and_preserves_media(database):

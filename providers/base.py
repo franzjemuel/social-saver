@@ -110,6 +110,44 @@ class ArchivedPost:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ArchivedHighlightStoryMembership:
+    """Provider-neutral, non-expiring metadata for one Highlight Story.
+
+    Provider URLs and raw responses are intentionally absent. A later
+    worker-owned acquisition phase may resolve ephemeral descriptors in memory.
+    """
+
+    provider_namespace: str
+    provider_item_id: str
+    provider_position: int
+    media_type: str
+    caption: str | None = None
+    published_at: datetime | None = None
+    duration_seconds: float | None = None
+    has_media_descriptor: bool = False
+    has_cover_descriptor: bool = False
+
+
+@dataclass(frozen=True)
+class ArchivedHighlightCollectionSnapshot:
+    """One validated provider snapshot, preserving observed—not asserted—order.
+
+    ``observation_complete`` describes only the provider response. It is not
+    proof that the response is a complete upstream Highlight. Callers must set
+    ``upstream_completeness_verified`` only after independent verification.
+    """
+
+    provider_namespace: str
+    provider_collection_id: str
+    title: str | None
+    reported_item_count: int | None
+    has_cover_descriptor: bool
+    observation_complete: bool
+    memberships: tuple[ArchivedHighlightStoryMembership, ...]
+    upstream_completeness_verified: bool = False
+
+
 class ProfileArchiveProvider(ABC):
     """Discovers and normalizes profile metadata without downloading media."""
 
