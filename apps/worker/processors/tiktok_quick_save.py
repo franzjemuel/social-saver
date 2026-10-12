@@ -10,7 +10,7 @@ from core.config import settings
 from core.telegram_delivery import TelegramDelivery
 from providers.base import MediaNotFound, SourceUnavailable, TerminalProviderError
 from providers.tiktok.download import TikTokMediaDownloader
-from providers.tiktok.quick_save import normalize_tiktok_video_url
+from providers.tiktok.quick_save import normalize_tiktok_quick_save_url, resolve_tiktok_quick_save_url
 
 
 class TikTokQuickSaveFailure(TerminalProviderError):
@@ -26,12 +26,20 @@ class TikTokQuickSaveUnconfirmed(TikTokQuickSaveFailure):
         TerminalProviderError.__init__(self, "TikTok video delivery could not be confirmed")
 
 
-async def process_tiktok_quick_save(job, repo, bot, *, downloader=None, delivery=None):
+async def process_tiktok_quick_save(job, repo, bot, *, downloader=None, delivery=None, resolver=None):
     payload = job["input"] or {}
     try:
-        url = normalize_tiktok_video_url(payload.get("url"))
-    except TerminalProviderError:
-        raise TikTokQuickSaveFailure("Please send a direct public TikTok video link") from None
+        pending_url = normalize_tiktok_quick_save_url(payload.get("url"))
+        # Short URLs are dereferenced in the worker, never the bot.
+        # The resolver enforces exact TikTok hosts and bounded redirect hops.
+        url = await (resolver or resolve_tiktok_quick_save_url)(pending_url)
+        url = normalize_tiktok_quick_save_url(url)
+        if "/video/" not in url:
+            raise TikTokQuickSaveFailure()
+    except (TerminalProviderError, SourceUnavailable):
+        raise TikTokQuickSaveFailure("TikTok share link could not be resolved to a public video") from None
+    except Exception:
+        raise TikTokQuickSaveFailure() from None
     downloader = downloader or TikTokMediaDownloader(max_bytes=settings.telegram_hosted_upload_limit_bytes)
     delivery = delivery or TelegramDelivery(bot)
 
