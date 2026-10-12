@@ -36,12 +36,37 @@ A paid metadata-only call requires all of the following:
 3. `SOCIAL_SAVER_HIGHLIGHTS_POC_LIVE=1` in the process environment; and
 4. `--live` plus an explicit max charge no greater than USD 1.00.
 
-For example, after an authorized operator sets those environment variables:
+The selected documented synchronous endpoint accepts `maxTotalChargeUsd` and
+`timeout` as **query parameters**, not Actor input fields. The adapter sends
+both, caps the response at 100 dataset items, and allows a run timeout from 1
+through 300 seconds. Apify documents the charge parameter as a platform budget
+cap; its outcome can still be a failed run or a partial dataset depending on
+the Actor's pricing and behavior. This POC maps an HTTP charge-limit response
+to a sanitized error and can reject a result whose unique item count differs
+from an explicit expected count. It cannot independently attest an Actor's
+final charge from the synchronous dataset response.
+
+For the single authorized collection-discovery experiment, after an operator
+has supplied the token only in their local process environment:
 
 ```sh
+SOCIAL_SAVER_HIGHLIGHTS_POC_LIVE=1 \
 python -m providers.tiktok.apify_highlights \
-  --mode highlight_posts --collection-id example-collection \
-  --posts-per-page 10 --max-charge-usd 0.60 --live
+  --mode highlight_list --username theyuh_lvsh \
+  --max-charge-usd 0.10 --live
+```
+
+Do not run that command until an operator expressly approves the paid call.
+
+If collection discovery succeeds and the returned collection ID is confirmed,
+the separately bounded enumeration experiment is:
+
+```sh
+SOCIAL_SAVER_HIGHLIGHTS_POC_LIVE=1 \
+python -m providers.tiktok.apify_highlights \
+  --mode highlight_posts --collection-id 929610542340 \
+  --posts-per-page 10 --expected-items 25 \
+  --max-charge-usd 0.60 --live
 ```
 
 The command prints only counts, identifiers, metadata presence, timestamps,
@@ -55,6 +80,9 @@ or raw responses. It never downloads media.
   vendor review before any product dependency.
 - The published contract claims internal cursor pagination, but does not return
   cursor/page provenance in its dataset output.
+- A successful synchronous response has no final run receipt or charge total.
+  Cost-cap enforcement is documented by Apify, but this POC deliberately has
+  not spent money to independently verify this Actor's behavior at the cap.
 - Photo ordering and upstream TikTok ordering are not proven by this POC.
 - CDN descriptors are retained only in memory for a future worker evaluation;
   no descriptor is persisted or exposed by this command.

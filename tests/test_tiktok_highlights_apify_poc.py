@@ -9,7 +9,10 @@ from providers.tiktok.apify_highlights import (
     HighlightIncompleteResponse,
     HighlightProfileNotFound,
     LiveHighlightsCallNotAuthorized,
+    TikTokHighlightsAuthenticationError,
+    TikTokHighlightsCostLimitExceeded,
     TikTokHighlightsPocError,
+    TikTokHighlightsTimeout,
     _command,
     normalize_collections,
     normalize_stories,
@@ -88,6 +91,8 @@ async def test_documented_apify_payload_and_normalized_discovery(monkeypatch):
         assert request.url.path.endswith("igview-owner~tiktok-highlight-scraper/run-sync-get-dataset-items")
         assert request.headers["authorization"] == "Bearer private-token"
         assert request.url.params["maxTotalChargeUsd"] == "0.10"
+        assert request.url.params["timeout"] == "120"
+        assert request.url.params["limit"] == "100"
         assert json.loads(request.content) == {"mode": "highlight_list", "uniqueIds": ["example_user"]}
         return httpx.Response(200, json=COLLECTIONS)
     original = httpx.AsyncClient
@@ -130,6 +135,51 @@ async def test_profile_not_found_and_provider_failure_are_sanitized(monkeypatch)
         await client.discover("example_user", live_authorized=True)
 
 
+@pytest.mark.asyncio
+async def test_authentication_charge_and_timeout_failures_are_sanitized(monkeypatch):
+    monkeypatch.setenv("SOCIAL_SAVER_HIGHLIGHTS_POC_LIVE", "1")
+    statuses = iter((401, 403, 402, 408))
+
+    def handler(request):
+        return httpx.Response(next(statuses), json={"error": {"message": "untrusted provider detail"}})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs))
+    client = ApifyTikTokHighlightsPoc("private-token", max_charge_usd=0.10)
+    for expected in (
+        TikTokHighlightsAuthenticationError,
+        TikTokHighlightsAuthenticationError,
+        TikTokHighlightsCostLimitExceeded,
+        TikTokHighlightsTimeout,
+    ):
+        with pytest.raises(expected) as excinfo:
+            await client.discover("example_user", live_authorized=True)
+        assert "untrusted" not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_network_timeout_is_sanitized(monkeypatch):
+    monkeypatch.setenv("SOCIAL_SAVER_HIGHLIGHTS_POC_LIVE", "1")
+
+    def handler(request):
+        raise httpx.ReadTimeout("private endpoint")
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs))
+    with pytest.raises(TikTokHighlightsTimeout) as excinfo:
+        await ApifyTikTokHighlightsPoc("private-token", max_charge_usd=0.10).discover("example_user", live_authorized=True)
+    assert "private" not in str(excinfo.value)
+
+
+def test_expected_count_rejects_possible_partial_dataset_and_cost_timeout_bounds():
+    with pytest.raises(HighlightIncompleteResponse):
+        normalize_stories(STORIES, collection_id="collection-a", requested_posts_per_page=10, expected_item_count=4)
+    with pytest.raises(ValueError):
+        ApifyTikTokHighlightsPoc("token", max_charge_usd=1.01)
+    with pytest.raises(ValueError):
+        ApifyTikTokHighlightsPoc("token", max_charge_usd=0.10, timeout_seconds=301)
+
+
 def test_dry_run_input_validation_and_bounds():
     assert ApifyTikTokHighlightsPoc.discovery_input("https://www.tiktok.com/@example_user") == {"mode": "highlight_list", "uniqueIds": ["example_user"]}
     assert ApifyTikTokHighlightsPoc.stories_input("collection-a", posts_per_page=30)["postsPerPage"] == 30
@@ -144,7 +194,7 @@ async def test_manual_command_dry_run_needs_no_token_or_network(monkeypatch):
     monkeypatch.delenv("APIFY_TIKTOK_HIGHLIGHTS_TOKEN", raising=False)
     result = await _command(type("Args", (), {
         "mode": "highlight_list", "username": "@example_user", "collection_id": None,
-        "posts_per_page": 10, "max_charge_usd": 0.10, "live": False,
+        "posts_per_page": 10, "expected_items": None, "max_charge_usd": 0.10, "live": False,
     })())
     assert result == {
         "dry_run": True,

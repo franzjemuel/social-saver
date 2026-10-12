@@ -27,6 +27,9 @@ TOKEN_ENV = "APIFY_TIKTOK_HIGHLIGHTS_TOKEN"
 LIVE_GATE_ENV = "SOCIAL_SAVER_HIGHLIGHTS_POC_LIVE"
 MAX_POSTS_PER_PAGE = 30
 DEFAULT_TIMEOUT_SECONDS = 120
+MAX_TIMEOUT_SECONDS = 300
+MAX_CHARGE_USD = 1.00
+MAX_DATASET_ITEMS = 100
 
 
 class TikTokHighlightsPocError(SourceUnavailable):
@@ -46,6 +49,18 @@ class HighlightIncompleteResponse(TikTokHighlightsPocError):
 
 
 class LiveHighlightsCallNotAuthorized(TikTokHighlightsPocError):
+    pass
+
+
+class TikTokHighlightsAuthenticationError(TikTokHighlightsPocError):
+    pass
+
+
+class TikTokHighlightsTimeout(TikTokHighlightsPocError):
+    pass
+
+
+class TikTokHighlightsCostLimitExceeded(TikTokHighlightsPocError):
     pass
 
 
@@ -178,6 +193,7 @@ def normalize_stories(
     *,
     collection_id: str,
     requested_posts_per_page: int,
+    expected_item_count: int | None = None,
 ) -> HighlightStoryPage:
     if not isinstance(rows, list):
         raise HighlightIncompleteResponse("TikTok Highlights provider returned an invalid response")
@@ -210,20 +226,35 @@ def normalize_stories(
             media_descriptors=_descriptor_urls(row, media_type),
             cover_descriptor=_string(row.get("cover_url")),
         ))
-    return HighlightStoryPage(
+    page = HighlightStoryPage(
         stories=tuple(stories), raw_item_count=len(rows), duplicate_item_count=duplicates,
         requested_posts_per_page=requested_posts_per_page,
         provider_pagination_observed=len(rows) > requested_posts_per_page,
     )
+    if expected_item_count is not None and len(page.stories) != expected_item_count:
+        raise HighlightIncompleteResponse("TikTok Highlights provider returned an incomplete dataset")
+    return page
 
 
 class ApifyTikTokHighlightsPoc:
     """One-shot documented Actor client; never use this from a worker yet."""
 
     def __init__(self, token: str | None, *, max_charge_usd: float, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS):
+        self._validate_max_charge(max_charge_usd)
+        self._validate_timeout(timeout_seconds)
         self._token = token
         self._max_charge_usd = max_charge_usd
         self._timeout_seconds = timeout_seconds
+
+    @staticmethod
+    def _validate_max_charge(max_charge_usd: float) -> None:
+        if not 0 < max_charge_usd <= MAX_CHARGE_USD:
+            raise ValueError(f"max_charge_usd must be greater than 0 and no more than {MAX_CHARGE_USD:.2f}")
+
+    @staticmethod
+    def _validate_timeout(timeout_seconds: int) -> None:
+        if not 1 <= timeout_seconds <= MAX_TIMEOUT_SECONDS:
+            raise ValueError(f"timeout_seconds must be 1-{MAX_TIMEOUT_SECONDS}")
 
     @staticmethod
     def discovery_input(username: str) -> dict[str, object]:
@@ -245,29 +276,48 @@ class ApifyTikTokHighlightsPoc:
         return normalize_collections(rows, username=payload["uniqueIds"][0])
 
     async def stories(
-        self, collection_id: str, *, posts_per_page: int = 10, live_authorized: bool = False,
+        self,
+        collection_id: str,
+        *,
+        posts_per_page: int = 10,
+        expected_item_count: int | None = None,
+        live_authorized: bool = False,
     ) -> HighlightStoryPage:
+        if expected_item_count is not None and not 0 <= expected_item_count < MAX_DATASET_ITEMS:
+            raise ValueError(f"expected_item_count must be 0-{MAX_DATASET_ITEMS - 1}")
         payload = self.stories_input(collection_id, posts_per_page=posts_per_page)
         rows = await self._run(payload, live_authorized=live_authorized, missing="collection")
-        return normalize_stories(rows, collection_id=payload["highlightIds"][0], requested_posts_per_page=posts_per_page)
+        return normalize_stories(
+            rows,
+            collection_id=payload["highlightIds"][0],
+            requested_posts_per_page=posts_per_page,
+            expected_item_count=expected_item_count,
+        )
 
     async def _run(self, payload: dict[str, object], *, live_authorized: bool, missing: Literal["profile", "collection"]) -> object:
         if not live_authorized or os.getenv(LIVE_GATE_ENV) != "1":
             raise LiveHighlightsCallNotAuthorized("Live TikTok Highlights calls require explicit authorization")
         if not self._token:
             raise LiveHighlightsCallNotAuthorized(f"{TOKEN_ENV} is not configured")
-        if not 0 < self._max_charge_usd <= 1:
-            raise ValueError("max_charge_usd must be greater than 0 and no more than 1")
         endpoint = f"https://api.apify.com/v2/acts/{quote(ACTOR_ID, safe='~')}/run-sync-get-dataset-items"
         params = {
             "clean": "true", "format": "json", "timeout": str(self._timeout_seconds),
             "maxTotalChargeUsd": f"{self._max_charge_usd:.2f}",
+            "limit": str(MAX_DATASET_ITEMS),
         }
         try:
             async with httpx.AsyncClient(timeout=self._timeout_seconds + 30, follow_redirects=False) as client:
                 response = await client.post(endpoint, params=params, headers={"Authorization": f"Bearer {self._token}"}, json=payload)
+        except httpx.TimeoutException as exc:
+            raise TikTokHighlightsTimeout("TikTok Highlights provider timed out") from exc
         except httpx.HTTPError as exc:
-            raise TikTokHighlightsPocError(f"TikTok Highlights provider failed: {type(exc).__name__}") from exc
+            raise TikTokHighlightsPocError("TikTok Highlights provider network failure") from exc
+        if response.status_code in {401, 403}:
+            raise TikTokHighlightsAuthenticationError("TikTok Highlights provider authentication failed")
+        if response.status_code == 402:
+            raise TikTokHighlightsCostLimitExceeded("TikTok Highlights provider charge limit was reached")
+        if response.status_code == 408:
+            raise TikTokHighlightsTimeout("TikTok Highlights provider timed out")
         if response.status_code == 404:
             if missing == "profile":
                 raise HighlightProfileNotFound("TikTok Highlights profile was unavailable")
@@ -286,15 +336,20 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--username")
     parser.add_argument("--collection-id")
     parser.add_argument("--posts-per-page", type=int, default=10)
+    parser.add_argument("--expected-items", type=int, help="Reject a completed run whose unique item count differs")
     parser.add_argument("--max-charge-usd", type=float, required=True)
     parser.add_argument("--live", action="store_true", help="Perform one explicitly authorized paid metadata-only request")
     return parser
 
 
 async def _command(args: argparse.Namespace) -> dict[str, object]:
+    ApifyTikTokHighlightsPoc._validate_max_charge(args.max_charge_usd)
+    expected_items = getattr(args, "expected_items", None)
     if args.mode == "highlight_list":
         if not args.username:
             raise ValueError("--username is required for highlight_list")
+        if expected_items is not None:
+            raise ValueError("--expected-items is only valid for highlight_posts")
         payload = ApifyTikTokHighlightsPoc.discovery_input(args.username)
     else:
         if not args.collection_id:
@@ -322,6 +377,7 @@ async def _command(args: argparse.Namespace) -> dict[str, object]:
     page = await client.stories(
         args.collection_id,
         posts_per_page=args.posts_per_page,
+        expected_item_count=expected_items,
         live_authorized=True,
     )
     return {
@@ -343,53 +399,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
-
-
-def _safe_command_output(value: HighlightCollection | HighlightStoryPage) -> dict[str, object]:
-    if isinstance(value, HighlightCollection):
-        return value.safe_summary()
-    return value.safe_summary()
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Opt-in TikTok Highlights Apify discovery POC")
-    parser.add_argument("--mode", choices=("highlight_list", "highlight_posts"), required=True)
-    parser.add_argument("--username")
-    parser.add_argument("--collection-id")
-    parser.add_argument("--posts-per-page", type=int, default=10)
-    parser.add_argument("--max-charge-usd", type=float, required=True)
-    parser.add_argument("--live", action="store_true", help="Authorize one paid, metadata-only Actor run")
-    args = parser.parse_args(argv)
-    if args.mode == "highlight_list" and not args.username:
-        parser.error("--username is required for highlight_list")
-    if args.mode == "highlight_posts" and not args.collection_id:
-        parser.error("--collection-id is required for highlight_posts")
-
-    # Dry run validates the documented payload shape without reading a token or network.
-    try:
-        if not args.live:
-            payload = (
-                ApifyTikTokHighlightsPoc.discovery_input(args.username)
-                if args.mode == "highlight_list"
-                else ApifyTikTokHighlightsPoc.stories_input(args.collection_id, posts_per_page=args.posts_per_page)
-            )
-            print({"dry_run": True, "actor": ACTOR_ID, "payload": payload, "max_charge_usd": args.max_charge_usd})
-            return 0
-        client = ApifyTikTokHighlightsPoc(os.getenv(TOKEN_ENV), max_charge_usd=args.max_charge_usd)
-        print({"warning": "paid_metadata_only_run", "max_charge_usd": args.max_charge_usd})
-        result: HighlightCollection | HighlightStoryPage
-        if args.mode == "highlight_list":
-            collections = asyncio.run(client.discover(args.username, live_authorized=True))
-            print({"collection_count": len(collections), "collections": [_safe_command_output(value) for value in collections]})
-        else:
-            result = asyncio.run(client.stories(args.collection_id, posts_per_page=args.posts_per_page, live_authorized=True))
-            print(_safe_command_output(result))
-        return 0
-    except (TikTokHighlightsPocError, UnsupportedUrl, ValueError) as exc:
-        print({"error": type(exc).__name__})
-        return 2
-
-
-if __name__ == "__main__":  # pragma: no cover - command wrapper
     raise SystemExit(main())
