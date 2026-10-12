@@ -1,8 +1,11 @@
 # Backlog
 
 ## P0 launch blockers
+- [ ] Review and staging-test PR #37: real persistent Telegram chat buttons, contextual inline Web App launch buttons, correct published archive/Add Profile destinations, and unchanged TikTok Quick Save.
+- [ ] Design tenant-scoped personal /status separate from admin-only global system health and durable notification outbox.
+- [ ] Build Instagram/TikTok universal one-paste intent router with explicit media/profile/story actions and capability gates.
 - [ ] Diagnose portrait vs square TikTok native Telegram quick-save playback: compare ffprobe MP4 geometry, short file fingerprints, and Telegram receipt dimensions with one controlled direct/short link pair after reviewed staging release.
-- [ ] Validate real TikTok app short-share URL -> worker redirect -> native forwardable Telegram MP4 in staging; do not count offline fixture tests as hosted acceptance.
+- [x] Validate real TikTok app short-share URL -> worker redirect -> native forwardable Telegram MP4 in staging (tester confirmed 2026-10-12).
 - [x] Create persistent GitHub repository (`franzjemuel/social-saver`).
 - [ ] Provision staging Telegram bot/token.
 - [ ] Provision Postgres/Supabase + PGMQ.

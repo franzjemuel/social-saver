@@ -1,7 +1,8 @@
-import asyncio, time
+import asyncio, logging, time
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, LabeledPrice
+from aiogram.exceptions import TelegramAPIError
 from core.config import settings
 from core.database import Database
 from core.queue import JobQueue
@@ -21,6 +22,13 @@ from providers.base import UnsupportedUrl
 from providers.tiktok.quick_save import is_tiktok_link, normalize_tiktok_quick_save_url
 from providers.instagram.apify_stories import normalize_public_profile
 from core.admin import parse_admin_telegram_ids
+from core.bot_navigation import (
+    ACTION_HELP, ACTION_SAVE, CALLBACK_HELP_TEXT, CALLBACK_SAVE_TEXT,
+    HELP_TEXT, LABEL_ADD_PROFILE, LABEL_ARCHIVE, LABEL_HELP, LABEL_SAVE_LINK,
+    SAVE_HELP_TEXT, WELCOME_TEXT,
+    add_profile_inline_keyboard, archive_inline_keyboard, archive_menu_button,
+    chat_reply_keyboard, navigation_inline_keyboard,
+)
 
 async def main():
     init_observability("telegram-bot")
@@ -44,6 +52,48 @@ async def main():
     bot=Bot(settings.telegram_bot_token)
     dp=Dispatcher()
 
+    # Keep the global Telegram menu pointed at the published Mini App.
+    # This is best-effort: Telegram API downtime must not disable Quick Save.
+    try:
+        await bot.set_chat_menu_button(
+            menu_button=archive_menu_button(settings.telegram_mini_app_url)
+        )
+    except TelegramAPIError as exc:
+        logging.getLogger(__name__).warning(
+            "telegram_archive_menu_configuration_failed type=%s",
+            type(exc).__name__,
+        )
+
+    def in_private_chat(message: Message) -> bool:
+        return bool(message.chat and message.chat.type == "private")
+
+    async def send_archive_entry(message: Message) -> None:
+        if not in_private_chat(message):
+            await message.answer("Open a private chat with @socialsaverapp_bot to use your archive.")
+            return
+        await message.answer(
+            "📚 Your private archive is in the Mini App.",
+            reply_markup=archive_inline_keyboard(settings.telegram_mini_app_url),
+        )
+
+    async def send_add_profile_entry(message: Message) -> None:
+        if not in_private_chat(message):
+            await message.answer("Open a private chat with @socialsaverapp_bot to add a profile.")
+            return
+        await message.answer(
+            "➕ Open the Mini App to add a TikTok profile to your private archive.",
+            reply_markup=add_profile_inline_keyboard(settings.telegram_mini_app_url),
+        )
+
+    async def send_help(message: Message) -> None:
+        await message.answer(
+            HELP_TEXT,
+            reply_markup=(
+                navigation_inline_keyboard(settings.telegram_mini_app_url)
+                if in_private_chat(message) else None
+            ),
+        )
+
     async def user_id(message):
         u=message.from_user
         return await repo.get_or_create_telegram_user(u.id,u.username,u.first_name)
@@ -60,9 +110,55 @@ async def main():
         return bool(message.from_user and message.from_user.id in admin_telegram_ids)
 
     @dp.message(Command("start"))
+    @dp.message(Command("menu"))
     async def start(message:Message):
         await user_id(message)
-        await message.answer("Welcome. Send a supported Instagram or TikTok video link, or use /stories, /savefriend, /friends, /watch, /archive, /plan, or /upgrade.")
+        if not in_private_chat(message):
+            await message.answer(
+                "👋 Social Saver delivers supported TikTok and Instagram media. "
+                "Open my private chat to use the archive and navigation buttons."
+            )
+            return
+        await message.answer(
+            WELCOME_TEXT,
+            reply_markup=chat_reply_keyboard(settings.telegram_mini_app_url),
+        )
+
+    @dp.message(Command("app"))
+    async def open_app(message:Message):
+        await send_archive_entry(message)
+
+    @dp.message(Command("add"))
+    async def add_profile(message:Message):
+        await send_add_profile_entry(message)
+
+    @dp.message(Command("help"))
+    @dp.message(F.text == LABEL_HELP)
+    async def help_menu(message:Message):
+        await send_help(message)
+
+    @dp.message(F.text == LABEL_SAVE_LINK)
+    async def prompt_save_link(message:Message):
+        await message.answer(SAVE_HELP_TEXT)
+
+    # Web App reply-keyboard buttons normally open the app without emitting
+    # text. The text handlers are graceful fallbacks for legacy clients.
+    @dp.message(F.text == LABEL_ARCHIVE)
+    async def archive_button_fallback(message:Message):
+        await send_archive_entry(message)
+
+    @dp.message(F.text == LABEL_ADD_PROFILE)
+    async def add_button_fallback(message:Message):
+        await send_add_profile_entry(message)
+
+    @dp.callback_query(F.data.in_({ACTION_SAVE, ACTION_HELP}))
+    async def navigation_button(callback:CallbackQuery):
+        # Read-only, idempotent callbacks: repeated taps never enqueue jobs
+        # or mutate account/archive state.
+        if callback.data == ACTION_SAVE:
+            await callback.answer(CALLBACK_SAVE_TEXT, show_alert=True)
+        else:
+            await callback.answer(CALLBACK_HELP_TEXT, show_alert=True)
 
     @dp.message(Command("stories"))
     async def stories(message:Message):
@@ -241,7 +337,11 @@ async def main():
     @dp.message(Command("archive"))
     async def archive(message:Message):
         parts=(message.text or "").split(maxsplit=1)
-        if len(parts)!=2: await message.answer("Usage: /archive <Instagram URL>"); return
+        # /archive retains its existing URL-archive behavior, while a bare
+        # /archive opens the Mini App instead of exposing a confusing error.
+        if len(parts)!=2:
+            await send_archive_entry(message)
+            return
         try: canonical=normalize_instagram_url(parts[1].strip())
         except UnsupportedUrl as exc: await message.answer(f"Unsupported link: {exc}"); return
         uid=await user_id(message)
