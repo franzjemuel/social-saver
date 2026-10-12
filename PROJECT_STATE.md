@@ -21,6 +21,18 @@ Updated for v3.8.
   authentication, or media downloads: tt-dlp resolved the expected numeric
   account ID and secUid, selected 12 posts, and yt-dlp enriched all 12.
 
+## TikTok Profile Highlights Apify discovery POC — pending review
+
+- Added an isolated, manually gated adapter for a community Apify Actor's
+  documented `highlight_list` and `highlight_posts` contracts. It is fixture
+  tested only: no token, network call, database model, worker, or archive path
+  is enabled by this work.
+- The POC preserves provider-returned collection/item identifiers and ordering
+  in memory, reports only safe summaries, and requires both an environment gate
+  and an explicit manual command before a paid metadata-only run.
+- This does not establish that identifiers or ordering are TikTok-native,
+  durable, lawful for product use, or suitable for production dependency.
+
 ## Profile archive read API — 2026-10-05
 
 - Added Telegram-authenticated, tenant-scoped read routes for profile archive
