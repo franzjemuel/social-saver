@@ -6,6 +6,7 @@ from core.queue import JobQueue
 from core.repository import Repository
 from providers.base import TerminalProviderError
 from apps.worker.processors.media import process_resolve_media
+from apps.worker.processors.tiktok_quick_save import process_tiktok_quick_save
 from apps.worker.processors.watch import process_poll_watch
 from apps.worker.processors.live import process_record_live
 from apps.worker.processors.live_finalize import process_finalize_live
@@ -113,6 +114,10 @@ async def main():
                 elif job["job_type"] == "resolve_media":
                     async with provider_concurrency.for_platform("instagram"):
                         result = await process_resolve_media(job, repo, bot, db.pool)
+                    success_message = None
+                elif job["job_type"] == "tiktok_quick_save":
+                    async with provider_concurrency.for_platform("tiktok"):
+                        result = await process_tiktok_quick_save(job, repo, bot)
                     success_message = None
                 elif job["job_type"] == "resolve_stories":
                     async with provider_concurrency.for_platform("instagram"):
