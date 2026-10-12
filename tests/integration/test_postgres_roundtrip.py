@@ -567,6 +567,41 @@ async def test_profile_sync_jobs_and_presence_reconciliation_are_tenant_safe(dat
     assert next(row for row in posts if row['platform_post_id'] == 'removed')['has_archived_media'] is True
 
 
+async def test_profile_highlight_sync_jobs_are_tenant_safe_atomic_and_coalesced(database):
+    """Exercise the new job SQL, ownership joins, PGMQ and execution latch."""
+    repo = Repository(database.pool)
+    queue = JobQueue(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','highlight-sync-owner','owner') returning id""", owner,
+    )
+    other_profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','highlight-sync-other','other') returning id""", other,
+    )
+
+    first = await repo.create_owned_profile_highlight_sync_job(owner, 1, profile, queue_name=queue.queue_name)
+    duplicate = await repo.create_owned_profile_highlight_sync_job(owner, 1, profile, queue_name=queue.queue_name)
+    assert first.id == duplicate.id and first.created is True and duplicate.created is False
+    assert await repo.create_owned_profile_highlight_sync_job(other, 2, profile, queue_name=queue.queue_name) is None
+    separate = await repo.create_owned_profile_highlight_sync_job(other, 2, other_profile, queue_name=queue.queue_name)
+    assert separate.id != first.id
+    assert await repo.get_owned_profile_highlight_sync(other, first.id) is None
+    assert await repo.get_owned_profile_highlight_sync(owner, first.id) is not None
+
+    messages = await queue.claim(10)
+    matching = [message for message in messages if message['message']['job_id'] in {str(first.id), str(separate.id)}]
+    assert len(matching) == 2  # coalescing did not emit a second queue message
+    for message in matching:
+        await queue.archive(message['msg_id'])
+
+    assert await repo.claim_profile_highlight_sync_execution(first.id, owner, profile) is True
+    assert await repo.claim_profile_highlight_sync_execution(first.id, owner, profile) is False
+    assert await repo.claim_profile_highlight_sync_execution(first.id, other, profile) is False
+
+
 def _highlight_membership(item_id, position, *, namespace='apify:tiktok-highlights'):
     return ArchivedHighlightStoryMembership(
         provider_namespace=namespace,

@@ -32,6 +32,14 @@ class ProfileImportJob:
     ready: bool = False
 
 
+@dataclass(frozen=True)
+class ProfileHighlightSyncJob:
+    """An owned Highlight-sync job plus whether it created queue work."""
+
+    id: object
+    created: bool
+
+
 class ProfileImportIdempotencyConflict(ValueError):
     """One client retry key cannot be reused for a different profile target."""
 
@@ -60,7 +68,7 @@ def _require_highlight_identifier(value, field_name):
         raise HighlightSnapshotValidationError(f"invalid {field_name}")
 
 
-def _validate_highlight_snapshot(snapshot: ArchivedHighlightCollectionSnapshot) -> None:
+def validate_highlight_snapshot(snapshot: ArchivedHighlightCollectionSnapshot) -> None:
     if not isinstance(snapshot, ArchivedHighlightCollectionSnapshot):
         raise HighlightSnapshotValidationError("invalid Highlight snapshot")
     _require_highlight_identifier(snapshot.provider_namespace, "provider namespace")
@@ -118,6 +126,11 @@ def _validate_highlight_snapshot(snapshot: ArchivedHighlightCollectionSnapshot) 
             raise HighlightSnapshotValidationError("duplicate membership identifier")
         item_ids.add(membership.provider_item_id)
         positions.add(membership.provider_position)
+
+
+# Kept for the already-established metadata-foundation test seam. New callers
+# should use the public name above.
+_validate_highlight_snapshot = validate_highlight_snapshot
 
 
 class Repository:
@@ -676,7 +689,7 @@ class Repository:
         that a provider returned a complete upstream view. Later reconciliation
         can use the retained presence fields after its own evidence threshold.
         """
-        _validate_highlight_snapshot(snapshot)
+        validate_highlight_snapshot(snapshot)
         reported_count_consistent = (
             snapshot.reported_item_count is not None
             and snapshot.reported_item_count == len(snapshot.memberships)
@@ -921,6 +934,91 @@ class Repository:
                     values($1,$2,'sync_profile',jsonb_build_object('profile_id',$3::uuid),'mini_app') returning id""", user_id, chat_id, profile_id)
                 await con.fetchval("select * from pgmq.send($1,jsonb_build_object('version',1,'job_id',$2::text),0)", queue_name, str(job["id"]))
                 return job["id"], True
+
+    async def create_owned_profile_highlight_sync_job(self, user_id, chat_id, profile_id, *, queue_name):
+        """Atomically queue one tenant-owned manual Highlight metadata sync.
+
+        The lock coalesces ordinary duplicate taps and PGMQ delivery is in the
+        same transaction as the durable job.  This is a job-level guard only;
+        future paid providers need their own reviewed invocation ledger/budget.
+        """
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                profile = await con.fetchrow(
+                    """select id,platform from archived_profiles
+                       where id=$1::uuid and user_id=$2 for update""",
+                    profile_id, user_id,
+                )
+                if profile is None or profile["platform"] != "tiktok":
+                    return None
+                await con.execute(
+                    "select pg_advisory_xact_lock(hashtextextended($1,0))",
+                    f"profile-highlight-sync:{user_id}:{profile_id}",
+                )
+                active = await con.fetchrow(
+                    """select id from jobs where user_id=$1 and job_type='sync_profile_highlights'
+                       and status in ('queued','running')
+                       and input->>'profile_id'=$2::uuid::text
+                       order by created_at limit 1 for update""",
+                    user_id, profile_id,
+                )
+                if active is not None:
+                    return ProfileHighlightSyncJob(active["id"], False)
+                job = await con.fetchrow(
+                    """insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel)
+                       values($1,$2,'sync_profile_highlights',
+                              jsonb_build_object('profile_id',$3::uuid),'mini_app')
+                       returning id""",
+                    user_id, chat_id, profile_id,
+                )
+                await con.fetchval(
+                    "select * from pgmq.send($1,jsonb_build_object('version',1,'job_id',$2::text),0)",
+                    queue_name, str(job["id"]),
+                )
+                return ProfileHighlightSyncJob(job["id"], True)
+
+    async def get_owned_profile_highlight_sync(self, user_id, job_id):
+        """Safe job row only for its owning tenant; foreign and absent are None."""
+        return await self.pool.fetchrow(
+            """select id,status,progress,result,error_code from jobs
+               where id=$1::uuid and user_id=$2 and job_type='sync_profile_highlights'""",
+            job_id, user_id,
+        )
+
+    async def get_owned_profile_highlight_sync_target(self, user_id, profile_id):
+        return await self.pool.fetchrow(
+            """select id,username,platform_account_id from archived_profiles
+               where id=$1::uuid and user_id=$2 and platform='tiktok'""",
+            profile_id, user_id,
+        )
+
+    async def claim_profile_highlight_sync_execution(self, job_id, user_id, profile_id):
+        """Claim the one provider execution before discovery can begin.
+
+        A queue redelivery after this claim is intentionally indeterminate,
+        rather than silently issuing a second future paid provider request.
+        This is not an external-provider billing receipt.
+        """
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                row = await con.fetchrow(
+                    """select id,input from jobs
+                       where id=$1::uuid and user_id=$2 and job_type='sync_profile_highlights'
+                         and input->>'profile_id'=$3::uuid::text
+                       for update""",
+                    job_id, user_id, profile_id,
+                )
+                if row is None:
+                    return False
+                if isinstance(row["input"], dict) and row["input"].get("provider_execution_claimed") is True:
+                    return False
+                await con.execute(
+                    """update jobs set input=jsonb_set(
+                           input,'{provider_execution_claimed}','true'::jsonb,true)
+                       where id=$1::uuid""",
+                    job_id,
+                )
+                return True
 
     async def get_owned_profile_sync(self, user_id, job_id):
         return await self.pool.fetchrow("""select id,status,progress,result,error_code from jobs

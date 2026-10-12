@@ -148,6 +148,26 @@ class ArchivedHighlightCollectionSnapshot:
     upstream_completeness_verified: bool = False
 
 
+@dataclass(frozen=True)
+class HighlightDiscoveryResult:
+    """Provider-neutral metadata result for one manually requested sync.
+
+    The sequence is provider-observed order only.  It deliberately carries no
+    media descriptors or raw provider response because those can be ephemeral
+    and are not part of this metadata-only synchronization boundary.
+    """
+
+    snapshots: tuple[ArchivedHighlightCollectionSnapshot, ...]
+    incomplete_collections: int = 0
+
+
+class ProfileHighlightsDiscoveryProvider(ABC):
+    """Discovers Highlight metadata; implementations must not acquire media."""
+
+    @abstractmethod
+    async def discover_highlights(self, username: str) -> HighlightDiscoveryResult: ...
+
+
 class ProfileArchiveProvider(ABC):
     """Discovers and normalizes profile metadata without downloading media."""
 

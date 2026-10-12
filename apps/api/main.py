@@ -541,6 +541,14 @@ class ProfileFullSyncStatus(BaseModel):
     error_code: str | None = None
 
 
+class ProfileHighlightSyncStatus(BaseModel):
+    job_id: str
+    status: str
+    progress: int
+    summary: dict[str, int] | None = None
+    error_code: str | None = None
+
+
 class ProfileArchivePlaybackResponse(BaseModel):
     available: bool
     media_type: str
@@ -599,6 +607,74 @@ async def profile_sync_status(job_id: str, identity=Depends(current_identity)):
     else: summary = None
     return ProfileSyncStatus(job_id=str(row["id"]), status=row["status"], progress=row["progress"], summary=summary,
                              error_code=None if row["status"] != "failed" else _profile_import_failure_code(row["error_code"]))
+
+
+_PROFILE_HIGHLIGHT_SYNC_ERROR_CODES = {
+    "HIGHLIGHTS_PROVIDER_DISABLED": "temporarily_unavailable",
+    "HIGHLIGHTS_PROVIDER_UNAVAILABLE": "temporarily_unavailable",
+    "HIGHLIGHTS_INVALID_RESPONSE": "temporarily_unavailable",
+    "HIGHLIGHTS_EXECUTION_INDETERMINATE": "temporarily_unavailable",
+    "HIGHLIGHTS_SYNC_FAILED": "temporarily_unavailable",
+}
+
+
+def _profile_highlight_sync_failure_code(value: object) -> str:
+    return _PROFILE_HIGHLIGHT_SYNC_ERROR_CODES.get(str(value or "").upper(), "temporarily_unavailable")
+
+
+def _profile_highlight_sync_summary(row):
+    if row["status"] != "completed" or not isinstance(row["result"], dict):
+        return None
+    keys = (
+        "collections_observed", "collections_created", "collections_refreshed",
+        "collections_incomplete", "memberships_created", "memberships_refreshed",
+    )
+    return {key: row["result"].get(key, 0) if isinstance(row["result"].get(key, 0), int) else 0 for key in keys}
+
+
+@app.post(
+    "/v1/profile-archives/{profile_id}/highlights/sync",
+    response_model=ProfileArchiveMediaJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def sync_profile_highlights(profile_id: str, identity=Depends(current_identity)):
+    """Queue a manual Highlight metadata sync only when server-enabled.
+
+    This flag is intentionally checked before repository/queue work so disabled
+    deployments cannot create latent jobs or ever reach a provider.
+    """
+    if not settings.tiktok_highlights_sync_enabled:
+        raise HTTPException(status_code=404, detail="profile_highlights_sync_not_found")
+    if _repo is None or _queue is None:
+        raise HTTPException(status_code=503, detail="api_not_ready")
+    try:
+        job = await _repo.create_owned_profile_highlight_sync_job(
+            identity["app_user_id"], identity["telegram_user_id"], UUID(profile_id), queue_name=_queue.queue_name,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="profile_highlights_sync_not_found") from None
+    if job is None:
+        # Missing and foreign profiles deliberately share this response.
+        raise HTTPException(status_code=404, detail="profile_highlights_sync_not_found")
+    return ProfileArchiveMediaJobResponse(job_id=str(job.id))
+
+
+@app.get("/v1/profile-highlight-syncs/{job_id}", response_model=ProfileHighlightSyncStatus)
+async def profile_highlight_sync_status(job_id: str, identity=Depends(current_identity)):
+    """Return only an owned job's safe, aggregate synchronization state."""
+    if _repo is None:
+        raise HTTPException(status_code=503, detail="api_not_ready")
+    try:
+        row = await _repo.get_owned_profile_highlight_sync(identity["app_user_id"], UUID(job_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="profile_highlights_sync_not_found") from None
+    if row is None:
+        raise HTTPException(status_code=404, detail="profile_highlights_sync_not_found")
+    return ProfileHighlightSyncStatus(
+        job_id=str(row["id"]), status=row["status"], progress=row["progress"],
+        summary=_profile_highlight_sync_summary(row),
+        error_code=None if row["status"] != "failed" else _profile_highlight_sync_failure_code(row["error_code"]),
+    )
 
 
 @app.post("/v1/profile-archives/{profile_id}/full-sync", response_model=ProfileArchiveMediaJobResponse,
