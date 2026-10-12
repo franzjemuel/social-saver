@@ -235,6 +235,31 @@ class Repository:
                 )
                 return ProfileImportValidationJob(created["id"], True)
 
+    async def claim_tiktok_quick_save_delivery(self, job_id, user_id):
+        """Durably latch a single external Telegram send per quick-save job.
+
+        This intentionally favors at-most-once delivery when Telegram returns
+        an ambiguous result. Retrying after a successful send is worse than
+        requiring a new explicit user message.
+        """
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                row = await con.fetchrow(
+                    """select input from jobs where id=$1::uuid and user_id=$2
+                       and job_type='tiktok_quick_save' and status='running'
+                       for update""", job_id, user_id,
+                )
+                if row is None or not isinstance(row["input"], dict):
+                    return False
+                if row["input"].get("telegram_delivery_claimed") is True:
+                    return False
+                await con.execute(
+                    """update jobs set input=jsonb_set(
+                          input, '{telegram_delivery_claimed}', 'true'::jsonb, true)
+                       where id=$1::uuid""", job_id,
+                )
+                return True
+
     async def get_job(self, job_id):
         return await self.pool.fetchrow("select * from jobs where id=$1", job_id)
 
