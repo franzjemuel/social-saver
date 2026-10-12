@@ -678,8 +678,8 @@ class Repository:
         """
         _validate_highlight_snapshot(snapshot)
         reported_count_consistent = (
-            snapshot.reported_item_count is None
-            or snapshot.reported_item_count == len(snapshot.memberships)
+            snapshot.reported_item_count is not None
+            and snapshot.reported_item_count == len(snapshot.memberships)
         )
         snapshot_complete = bool(
             reported_count_consistent

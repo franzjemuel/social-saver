@@ -579,14 +579,17 @@ def _highlight_membership(item_id, position, *, namespace='apify:tiktok-highligh
     )
 
 
+_UNSET = object()
+
+
 def _highlight_snapshot(
-    collection_id, memberships=(), *, complete=True, reported_count=None, upstream_verified=False,
+    collection_id, memberships=(), *, complete=True, reported_count=_UNSET, upstream_verified=False,
 ):
     return ArchivedHighlightCollectionSnapshot(
         provider_namespace='apify:tiktok-highlights',
         provider_collection_id=collection_id,
         title=f'collection-{collection_id}',
-        reported_item_count=len(memberships) if reported_count is None else reported_count,
+        reported_item_count=len(memberships) if reported_count is _UNSET else reported_count,
         has_cover_descriptor=True,
         observation_complete=complete,
         memberships=tuple(memberships),
@@ -615,6 +618,7 @@ async def test_highlight_snapshots_are_tenant_safe_idempotent_and_non_destructiv
     first = await repo.reconcile_owned_highlight_collection_snapshot(owner, profile, initial)
     assert first.collection_created is True
     assert (first.memberships_created, first.memberships_refreshed) == (2, 0)
+    assert first.snapshot_complete is True
     second = await repo.reconcile_owned_highlight_collection_snapshot(owner, profile, initial)
     assert second.collection_created is False
     assert (second.memberships_created, second.memberships_refreshed) == (0, 2)
@@ -687,6 +691,24 @@ async def test_highlight_snapshots_are_tenant_safe_idempotent_and_non_destructiv
     assert completeness['unverified']['last_snapshot_complete'] is False
     assert completeness['inconsistent']['last_snapshot_count_consistent'] is False
     assert completeness['inconsistent']['last_snapshot_complete'] is False
+
+    unknown_count = await repo.reconcile_owned_highlight_collection_snapshot(
+        owner,
+        profile,
+        _highlight_snapshot(
+            'unknown-count', (_highlight_membership('item', 0),), reported_count=None, upstream_verified=True,
+        ),
+    )
+    assert unknown_count.reported_count_consistent is False
+    assert unknown_count.snapshot_complete is False
+
+    empty_complete = await repo.reconcile_owned_highlight_collection_snapshot(
+        owner,
+        profile,
+        _highlight_snapshot('empty-complete', (), reported_count=0, upstream_verified=True),
+    )
+    assert empty_complete.reported_count_consistent is True
+    assert empty_complete.snapshot_complete is True
 
     # An item may be in two collections without duplication inside either one.
     second_collection = await repo.reconcile_owned_highlight_collection_snapshot(
