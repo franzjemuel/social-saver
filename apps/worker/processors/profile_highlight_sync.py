@@ -7,9 +7,11 @@ requires its own reviewed increment.
 from __future__ import annotations
 
 from dataclasses import replace
+import asyncio
 
 from core.repository import HighlightSnapshotValidationError, validate_highlight_snapshot
 from providers.base import HighlightDiscoveryResult, ProfileHighlightsDiscoveryProvider
+from providers.tiktok.scanner import TikTokProfileScanner
 
 
 MAX_HIGHLIGHT_COLLECTIONS_PER_SYNC = 100
@@ -37,6 +39,9 @@ def _validate_discovery_result(result: object) -> tuple:
         isinstance(result.incomplete_collections, bool)
         or not isinstance(result.incomplete_collections, int)
         or result.incomplete_collections < 0
+        or isinstance(result.failed_collections, bool)
+        or not isinstance(result.failed_collections, int)
+        or result.failed_collections < 0
         or len(result.snapshots) > MAX_HIGHLIGHT_COLLECTIONS_PER_SYNC
     ):
         raise TikTokProfileHighlightSyncFailure("highlights_invalid_response")
@@ -64,7 +69,9 @@ def _validate_discovery_result(result: object) -> tuple:
     return tuple(sanitized)
 
 
-async def process_sync_profile_highlights(job, repo, provider: ProfileHighlightsDiscoveryProvider | None = None):
+async def process_sync_profile_highlights(
+    job, repo, provider: ProfileHighlightsDiscoveryProvider | None = None, scanner=None,
+):
     payload = job.get("input") or {}
     profile_id = payload.get("profile_id")
     if not isinstance(profile_id, str):
@@ -72,6 +79,16 @@ async def process_sync_profile_highlights(job, repo, provider: ProfileHighlights
     target = await repo.get_owned_profile_highlight_sync_target(job["user_id"], profile_id)
     if target is None:
         raise TikTokProfileHighlightSyncFailure("highlights_sync_failed")
+    # A provider collection belongs to a username, which can be reassigned.
+    # Resolve it through the existing no-cookie stable-account scanner before
+    # either claiming execution or persisting any provider response.
+    scanner = scanner or TikTokProfileScanner()
+    try:
+        resolved_profile = await asyncio.to_thread(scanner.resolve_profile, target["username"])
+    except Exception as exc:
+        raise TikTokProfileHighlightSyncFailure("profile_identity_unavailable") from exc
+    if not resolved_profile or resolved_profile.user_id != target["platform_account_id"]:
+        raise TikTokProfileHighlightSyncFailure("profile_changed")
     if not await repo.claim_profile_highlight_sync_execution(job["id"], job["user_id"], profile_id):
         # Do not repeat a future external request merely because a message was
         # redelivered after a process interruption.
@@ -80,7 +97,7 @@ async def process_sync_profile_highlights(job, repo, provider: ProfileHighlights
     await repo.update_job_progress(job["id"], 10)
     provider = provider or DisabledProfileHighlightsProvider()
     try:
-        result = await provider.discover_highlights(target["username"])
+        result = await provider.discover_highlights(resolved_profile.username)
     except TikTokProfileHighlightSyncFailure:
         raise
     except TimeoutError as exc:
@@ -106,6 +123,12 @@ async def process_sync_profile_highlights(job, repo, provider: ProfileHighlights
         "collections_created": collections_created,
         "collections_refreshed": collections_refreshed,
         "collections_incomplete": result.incomplete_collections,
+        "collections_failed": result.failed_collections,
         "memberships_created": memberships_created,
         "memberships_refreshed": memberships_refreshed,
+        "outcome": (
+            "partial_failure" if result.failed_collections else
+            "incomplete" if result.incomplete_collections else
+            "complete"
+        ),
     }

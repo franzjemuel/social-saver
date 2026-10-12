@@ -159,6 +159,7 @@ class HighlightDiscoveryResult:
 
     snapshots: tuple[ArchivedHighlightCollectionSnapshot, ...]
     incomplete_collections: int = 0
+    failed_collections: int = 0
 
 
 class ProfileHighlightsDiscoveryProvider(ABC):

@@ -546,6 +546,7 @@ class ProfileHighlightSyncStatus(BaseModel):
     status: str
     progress: int
     summary: dict[str, int] | None = None
+    outcome: str | None = None
     error_code: str | None = None
 
 
@@ -627,7 +628,7 @@ def _profile_highlight_sync_summary(row):
         return None
     keys = (
         "collections_observed", "collections_created", "collections_refreshed",
-        "collections_incomplete", "memberships_created", "memberships_refreshed",
+        "collections_incomplete", "collections_failed", "memberships_created", "memberships_refreshed",
     )
     return {key: row["result"].get(key, 0) if isinstance(row["result"].get(key, 0), int) else 0 for key in keys}
 
@@ -673,6 +674,8 @@ async def profile_highlight_sync_status(job_id: str, identity=Depends(current_id
     return ProfileHighlightSyncStatus(
         job_id=str(row["id"]), status=row["status"], progress=row["progress"],
         summary=_profile_highlight_sync_summary(row),
+        outcome=(row["result"].get("outcome") if row["status"] == "completed" and isinstance(row["result"], dict)
+                 and row["result"].get("outcome") in {"complete", "incomplete", "partial_failure"} else None),
         error_code=None if row["status"] != "failed" else _profile_highlight_sync_failure_code(row["error_code"]),
     )
 

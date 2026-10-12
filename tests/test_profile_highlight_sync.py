@@ -61,7 +61,7 @@ class Repo:
         self.calls = []
 
     async def get_owned_profile_highlight_sync_target(self, *_):
-        return {"username": "creator", "platform_account_id": "not-exposed"}
+        return {"username": "creator", "platform_account_id": "stable-id"}
 
     async def claim_profile_highlight_sync_execution(self, *args):
         self.calls.append(("claim", args))
@@ -86,6 +86,15 @@ class Provider:
         return self.result
 
 
+class Scanner:
+    class Profile:
+        username = "renamed-creator"
+        user_id = "stable-id"
+
+    def resolve_profile(self, _username):
+        return self.Profile()
+
+
 @pytest.mark.asyncio
 async def test_synthetic_highlight_sync_reconciles_validated_collections_only():
     repo = Repo()
@@ -94,12 +103,13 @@ async def test_synthetic_highlight_sync_reconciles_validated_collections_only():
         snapshot("two", (membership("same-story", 0),), complete=False),
     ), incomplete_collections=1))
     result = await process_sync_profile_highlights(
-        {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider,
+        {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, Scanner(),
     )
     assert provider.calls == 1
     assert result == {
         "collections_observed": 2, "collections_created": 2, "collections_refreshed": 0,
-        "collections_incomplete": 1, "memberships_created": 3, "memberships_refreshed": 0,
+        "collections_incomplete": 1, "collections_failed": 0, "memberships_created": 3, "memberships_refreshed": 0,
+        "outcome": "incomplete",
     }
     persisted = [call[-1] for name, call in repo.calls if name == "reconcile"]
     assert [item.provider_position for item in persisted[0].memberships] == [0, 1]
@@ -119,7 +129,7 @@ async def test_invalid_discovery_never_mutates_any_collection(result):
     provider = Provider(result)
     with pytest.raises(TikTokProfileHighlightSyncFailure) as exc:
         await process_sync_profile_highlights(
-            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider,
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, Scanner(),
         )
     assert exc.value.code == "highlights_invalid_response"
     assert not [entry for entry in repo.calls if entry[0] == "reconcile"]
@@ -131,7 +141,7 @@ async def test_redelivery_claim_never_repeats_provider_execution():
     provider = Provider(HighlightDiscoveryResult(()))
     with pytest.raises(TikTokProfileHighlightSyncFailure) as exc:
         await process_sync_profile_highlights(
-            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider,
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, Scanner(),
         )
     assert exc.value.code == "highlights_execution_indeterminate"
     assert provider.calls == 0
@@ -142,10 +152,42 @@ async def test_disabled_provider_has_no_live_or_fixture_fallback():
     repo = Repo()
     with pytest.raises(TikTokProfileHighlightSyncFailure) as exc:
         await process_sync_profile_highlights(
-            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo,
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, scanner=Scanner(),
         )
     assert exc.value.code == "highlights_provider_disabled"
     assert not [entry for entry in repo.calls if entry[0] == "reconcile"]
+
+
+@pytest.mark.asyncio
+async def test_identity_mismatch_rejects_before_provider_claim_or_persistence():
+    class WrongScanner(Scanner):
+        class Profile:
+            username = "creator"
+            user_id = "different-stable-id"
+
+    repo = Repo()
+    provider = Provider(HighlightDiscoveryResult(()))
+    with pytest.raises(TikTokProfileHighlightSyncFailure) as exc:
+        await process_sync_profile_highlights(
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, WrongScanner(),
+        )
+    assert exc.value.code == "profile_changed"
+    assert provider.calls == 0
+    assert not repo.calls
+
+
+@pytest.mark.asyncio
+async def test_partial_failure_preserves_prior_collections_and_projects_honest_outcome():
+    repo = Repo()
+    provider = Provider(HighlightDiscoveryResult(
+        (snapshot("one", (membership("a", 0),)),), failed_collections=1,
+    ))
+    result = await process_sync_profile_highlights(
+        {"id": "job", "user_id": "tenant", "input": {"profile_id": PROFILE}}, repo, provider, Scanner(),
+    )
+    assert result["outcome"] == "partial_failure"
+    assert result["collections_failed"] == 1
+    assert len([entry for entry in repo.calls if entry[0] == "reconcile"]) == 1
 
 
 @pytest.mark.asyncio

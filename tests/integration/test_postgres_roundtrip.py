@@ -582,9 +582,13 @@ async def test_profile_highlight_sync_jobs_are_tenant_safe_atomic_and_coalesced(
            values($1,'tiktok','highlight-sync-other','other') returning id""", other,
     )
 
-    first = await repo.create_owned_profile_highlight_sync_job(owner, 1, profile, queue_name=queue.queue_name)
-    duplicate = await repo.create_owned_profile_highlight_sync_job(owner, 1, profile, queue_name=queue.queue_name)
-    assert first.id == duplicate.id and first.created is True and duplicate.created is False
+    concurrent = await asyncio.gather(*(
+        repo.create_owned_profile_highlight_sync_job(owner, 1, profile, queue_name=queue.queue_name)
+        for _ in range(8)
+    ))
+    first = concurrent[0]
+    assert {item.id for item in concurrent} == {first.id}
+    assert sum(item.created for item in concurrent) == 1
     assert await repo.create_owned_profile_highlight_sync_job(other, 2, profile, queue_name=queue.queue_name) is None
     separate = await repo.create_owned_profile_highlight_sync_job(other, 2, other_profile, queue_name=queue.queue_name)
     assert separate.id != first.id
@@ -598,8 +602,25 @@ async def test_profile_highlight_sync_jobs_are_tenant_safe_atomic_and_coalesced(
         await queue.archive(message['msg_id'])
 
     assert await repo.claim_profile_highlight_sync_execution(first.id, owner, profile) is True
+    # A redelivered PGMQ message observes the durable latch and must not trigger
+    # a second future provider invocation.
     assert await repo.claim_profile_highlight_sync_execution(first.id, owner, profile) is False
     assert await repo.claim_profile_highlight_sync_execution(first.id, other, profile) is False
+
+    rollback_profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','highlight-sync-rollback','rollback') returning id""", owner,
+    )
+    with pytest.raises(asyncpg.PostgresError):
+        await repo.create_owned_profile_highlight_sync_job(
+            owner, 1, rollback_profile, queue_name="queue_that_does_not_exist",
+        )
+    assert await database.pool.fetchval(
+        """select count(*) from jobs
+           where user_id=$1 and job_type='sync_profile_highlights'
+             and input->>'profile_id'=$2::uuid::text""",
+        owner, rollback_profile,
+    ) == 0
 
 
 def _highlight_membership(item_id, position, *, namespace='apify:tiktok-highlights'):

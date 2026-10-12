@@ -37,6 +37,12 @@ Updated for v3.8.
   never infer removals from missing memberships. Live Apify execution, provider
   tokens, budgets, automatic polling, media acquisition, routes enabled for
   customers, and deployment remain separate approval gates.
+- Before the worker claims provider execution it resolves the archived
+  username through the existing stable TikTok account scanner and rejects an
+  unavailable or mismatched identity. Completed safe results distinguish
+  complete, incomplete, and partial-failure collection observations; retained
+  earlier collections are never rolled back merely because a later collection
+  failed to enumerate.
 
 ## Profile archive foundation — 2026-10-04
 
