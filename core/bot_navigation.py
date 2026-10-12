@@ -65,7 +65,8 @@ def mini_app_urls(configured_url: str) -> tuple[str, str]:
     if not isinstance(configured_url, str) or not configured_url:
         raise ValueError("Telegram Mini App URL must be configured")
     candidate = configured_url.strip()
-    if candidate != configured_url or len(candidate) > 2048:
+    if (candidate != configured_url or len(candidate) > 2048
+            or any(ord(char) < 33 or ord(char) > 126 for char in candidate)):
         raise ValueError("Telegram Mini App URL is invalid")
     try:
         parsed = urlsplit(candidate)
