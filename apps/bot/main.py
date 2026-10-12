@@ -18,7 +18,7 @@ from core.readiness import start_readiness_server
 from providers.instagram.watch import InstagramWatchProvider
 from providers.instagram.provider import normalize_instagram_url
 from providers.base import UnsupportedUrl
-from providers.tiktok.quick_save import is_tiktok_link, normalize_tiktok_video_url
+from providers.tiktok.quick_save import is_tiktok_link, normalize_tiktok_quick_save_url
 from providers.instagram.apify_stories import normalize_public_profile
 from core.admin import parse_admin_telegram_ids
 
@@ -306,7 +306,7 @@ async def main():
         text=(message.text or "").strip()
         if not text.startswith(("http://","https://")): return
         if is_tiktok_link(text):
-            try: canonical = normalize_tiktok_video_url(text)
+            try: canonical = normalize_tiktok_quick_save_url(text)
             except UnsupportedUrl as exc:
                 await message.answer(str(exc)); return
             uid = await user_id(message)

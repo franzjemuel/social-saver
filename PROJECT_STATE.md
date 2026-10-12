@@ -1,5 +1,25 @@
 # Project state
 
+## TikTok share-link Quick Save — short URL support under review
+
+- The Telegram quick-save bot recognizes TikTok-owned `/t/<share-code>/` links
+  as well as `vm.tiktok.com` and `vt.tiktok.com` share links; it queues
+  the URL without making an external network request during Telegram ingress.
+- The worker resolves short links with a small bounded HTTP redirect sequence.
+  Every hop is validated against exact HTTPS TikTok hostnames and only another
+  short-share path or a concrete public video path is allowed. HTML response
+  bodies are not downloaded or interpreted, and the resulting canonical video
+  continues through the existing yt-dlp/Telegram MP4 path and at-most-once
+  delivery latch.
+- The tester-supplied `www.tiktok.com/t/ZPLSLxk8n/` has been externally
+  observed redirecting to a concrete `@theyuh_lvsh/video/...` URL.
+  Fixture tests reproduce this redirect without contacting TikTok.
+- The short-link code is a **review candidate**, not yet merged or deployed.
+  TikTok may block redirect requests in the Railway environment; actual
+  end-to-end Telegram acceptance is still required.
+- TikTok photo/carousel chat delivery, Highlight media acquisition, and paid
+  Apify activation remain separate work.
+
 Updated for v3.8.
 
 ## TikTok Profile Highlights metadata foundation — merged

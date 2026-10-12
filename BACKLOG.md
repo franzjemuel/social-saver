@@ -1,6 +1,7 @@
 # Backlog
 
 ## P0 launch blockers
+- [ ] Validate real TikTok app short-share URL -> worker redirect -> native forwardable Telegram MP4 in staging; do not count offline fixture tests as hosted acceptance.
 - [x] Create persistent GitHub repository (`franzjemuel/social-saver`).
 - [ ] Provision staging Telegram bot/token.
 - [ ] Provision Postgres/Supabase + PGMQ.
