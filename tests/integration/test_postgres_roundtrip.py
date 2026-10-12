@@ -1156,3 +1156,24 @@ async def test_real_worker_completes_and_archives_job(database, tmp_path):
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.wait()
+
+
+async def test_tiktok_quick_save_delivery_claim_is_durable_and_tenant_scoped(database):
+    """Concurrent redeliveries cannot claim a second Telegram upload."""
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    job_id = await repo.create_job(owner, 12345, 'tiktok_quick_save', {
+        'url': 'https://www.tiktok.com/@creator/video/7176363825556376859',
+    })
+    await repo.start_job(job_id)
+    claims = await asyncio.gather(*(
+        repo.claim_tiktok_quick_save_delivery(job_id, owner) for _ in range(8)
+    ))
+    assert claims.count(True) == 1
+    assert claims.count(False) == 7
+    assert await repo.claim_tiktok_quick_save_delivery(job_id, other) is False
+    row = await repo.get_job(job_id)
+    assert row['input']['telegram_delivery_claimed'] is True
+    assert row['input']['url'] == 'https://www.tiktok.com/@creator/video/7176363825556376859'
+    assert await repo.claim_tiktok_quick_save_delivery(job_id, owner) is False
