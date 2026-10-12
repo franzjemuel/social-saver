@@ -131,7 +131,12 @@ class ArchivedHighlightStoryMembership:
 
 @dataclass(frozen=True)
 class ArchivedHighlightCollectionSnapshot:
-    """One validated provider snapshot, preserving observed—not asserted—order."""
+    """One validated provider snapshot, preserving observed—not asserted—order.
+
+    ``observation_complete`` describes only the provider response. It is not
+    proof that the response is a complete upstream Highlight. Callers must set
+    ``upstream_completeness_verified`` only after independent verification.
+    """
 
     provider_namespace: str
     provider_collection_id: str
@@ -140,6 +145,7 @@ class ArchivedHighlightCollectionSnapshot:
     has_cover_descriptor: bool
     observation_complete: bool
     memberships: tuple[ArchivedHighlightStoryMembership, ...]
+    upstream_completeness_verified: bool = False
 
 
 class ProfileArchiveProvider(ABC):

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from math import isfinite
+from uuid import uuid4
 
 from providers.base import ArchivedHighlightCollectionSnapshot, ArchivedHighlightStoryMembership
 from providers.tiktok.constants import INITIAL_PROFILE_IMPORT_POST_LIMIT
@@ -45,7 +46,10 @@ class HighlightCollectionReconciliation:
     collection_created: bool
     memberships_created: int
     memberships_refreshed: int
-    observation_complete: bool
+    reported_count_consistent: bool
+    provider_response_complete: bool
+    upstream_completeness_verified: bool
+    snapshot_complete: bool
 
 
 _MAX_HIGHLIGHT_SNAPSHOT_MEMBERSHIPS = 1_000
@@ -71,7 +75,11 @@ def _validate_highlight_snapshot(snapshot: ArchivedHighlightCollectionSnapshot) 
         or snapshot.reported_item_count < 0
     ):
         raise HighlightSnapshotValidationError("invalid reported item count")
-    if not isinstance(snapshot.has_cover_descriptor, bool) or not isinstance(snapshot.observation_complete, bool):
+    if (
+        not isinstance(snapshot.has_cover_descriptor, bool)
+        or not isinstance(snapshot.observation_complete, bool)
+        or not isinstance(snapshot.upstream_completeness_verified, bool)
+    ):
         raise HighlightSnapshotValidationError("invalid collection observation")
     if len(snapshot.memberships) > _MAX_HIGHLIGHT_SNAPSHOT_MEMBERSHIPS:
         raise HighlightSnapshotValidationError("too many Highlight memberships")
@@ -669,6 +677,16 @@ class Repository:
         can use the retained presence fields after its own evidence threshold.
         """
         _validate_highlight_snapshot(snapshot)
+        reported_count_consistent = (
+            snapshot.reported_item_count is None
+            or snapshot.reported_item_count == len(snapshot.memberships)
+        )
+        snapshot_complete = bool(
+            reported_count_consistent
+            and snapshot.observation_complete
+            and snapshot.upstream_completeness_verified
+        )
+        snapshot_id = uuid4()
         async with self.pool.acquire() as con:
             async with con.transaction():
                 owned = await con.fetchval(
@@ -682,17 +700,23 @@ class Repository:
                 collection = await con.fetchrow(
                     """insert into archived_highlight_collections
                          (archived_profile_id,provider_namespace,provider_collection_id,title,
-                          reported_item_count,has_cover_descriptor,last_snapshot_complete,
-                          last_complete_observed_at,is_present_on_original,last_absent_at)
-                       values($1::uuid,$2,$3,$4,$5,$6,$7,
-                              case when $7 then now() else null end,true,null)
+                          reported_item_count,has_cover_descriptor,last_snapshot_count_consistent,
+                          last_snapshot_provider_response_complete,last_snapshot_upstream_verified,
+                          last_snapshot_complete,latest_snapshot_id,last_complete_observed_at,
+                          is_present_on_original,last_absent_at)
+                       values($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+                              case when $10 then now() else null end,true,null)
                        on conflict(archived_profile_id,provider_namespace,provider_collection_id)
                        do update set
                          title=coalesce(excluded.title, archived_highlight_collections.title),
                          reported_item_count=coalesce(excluded.reported_item_count,
                                                       archived_highlight_collections.reported_item_count),
                          has_cover_descriptor=excluded.has_cover_descriptor,
+                         last_snapshot_count_consistent=excluded.last_snapshot_count_consistent,
+                         last_snapshot_provider_response_complete=excluded.last_snapshot_provider_response_complete,
+                         last_snapshot_upstream_verified=excluded.last_snapshot_upstream_verified,
                          last_snapshot_complete=excluded.last_snapshot_complete,
+                         latest_snapshot_id=excluded.latest_snapshot_id,
                          last_observed_at=now(),
                          last_complete_observed_at=case
                            when excluded.last_snapshot_complete then now()
@@ -707,7 +731,11 @@ class Repository:
                     snapshot.title,
                     snapshot.reported_item_count,
                     snapshot.has_cover_descriptor,
+                    reported_count_consistent,
                     snapshot.observation_complete,
+                    snapshot.upstream_completeness_verified,
+                    snapshot_complete,
+                    snapshot_id,
                 )
                 created = refreshed = 0
                 for membership in snapshot.memberships:
@@ -715,8 +743,9 @@ class Repository:
                         """insert into archived_highlight_story_memberships
                              (archived_highlight_collection_id,provider_namespace,provider_item_id,
                               provider_position,media_type,caption,published_at,duration_seconds,
-                              has_media_descriptor,has_cover_descriptor,is_present_on_original,last_absent_at)
-                           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,null)
+                              has_media_descriptor,has_cover_descriptor,last_observed_snapshot_id,
+                              is_present_on_original,last_absent_at)
+                           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true,null)
                            on conflict(archived_highlight_collection_id,provider_namespace,provider_item_id)
                            do update set
                              provider_position=excluded.provider_position,
@@ -729,6 +758,7 @@ class Repository:
                                                        archived_highlight_story_memberships.duration_seconds),
                              has_media_descriptor=excluded.has_media_descriptor,
                              has_cover_descriptor=excluded.has_cover_descriptor,
+                             last_observed_snapshot_id=excluded.last_observed_snapshot_id,
                              last_observed_at=now(),
                              is_present_on_original=true,
                              last_absent_at=null
@@ -743,6 +773,7 @@ class Repository:
                         membership.duration_seconds,
                         membership.has_media_descriptor,
                         membership.has_cover_descriptor,
+                        snapshot_id,
                     )
                     if row["created"]:
                         created += 1
@@ -753,32 +784,40 @@ class Repository:
                     collection_created=bool(collection["created"]),
                     memberships_created=created,
                     memberships_refreshed=refreshed,
-                    observation_complete=snapshot.observation_complete,
+                    reported_count_consistent=reported_count_consistent,
+                    provider_response_complete=snapshot.observation_complete,
+                    upstream_completeness_verified=snapshot.upstream_completeness_verified,
+                    snapshot_complete=snapshot_complete,
                 )
 
     async def list_owned_archived_highlight_collections(self, user_id, archived_profile_id, *, limit=50, offset=0):
         """Safe collection metadata only; missing and foreign profiles both return None."""
         if not 1 <= limit <= 100 or offset < 0:
             raise ValueError("invalid highlight collection pagination")
-        owned = await self.pool.fetchval(
-            "select id from archived_profiles where id=$1::uuid and user_id=$2",
-            archived_profile_id,
-            user_id,
+        rows = await self.pool.fetch(
+            """select collection.id,
+                      collection.provider_namespace,collection.provider_collection_id,
+                      collection.title,collection.reported_item_count,
+                      collection.has_cover_descriptor,collection.last_snapshot_count_consistent,
+                      collection.last_snapshot_provider_response_complete,
+                      collection.last_snapshot_upstream_verified,collection.last_snapshot_complete,
+                      collection.latest_snapshot_id,collection.first_archived_at,
+                      collection.last_observed_at,collection.last_complete_observed_at,
+                      collection.last_absent_at,collection.is_present_on_original
+               from archived_profiles profile
+               left join lateral (
+                 select * from archived_highlight_collections
+                 where archived_profile_id=profile.id
+                 order by first_archived_at, id
+                 limit $3::integer offset $4::integer
+               ) collection on true
+               where profile.id=$1::uuid and profile.user_id=$2
+               order by collection.first_archived_at nulls last, collection.id""",
+            archived_profile_id, user_id, limit, offset,
         )
-        if owned is None:
+        if not rows:
             return None
-        return await self.pool.fetch(
-            """select id,provider_namespace,provider_collection_id,title,reported_item_count,
-                      has_cover_descriptor,last_snapshot_complete,first_archived_at,last_observed_at,
-                      last_complete_observed_at,last_absent_at,is_present_on_original
-               from archived_highlight_collections
-               where archived_profile_id=$1::uuid
-               order by first_archived_at, id
-               limit $2::integer offset $3::integer""",
-            archived_profile_id,
-            limit,
-            offset,
-        )
+        return [] if rows[0]["id"] is None else rows
 
     async def list_owned_archived_highlight_memberships(
         self, user_id, archived_profile_id, collection_id, *, limit=100, offset=0,
@@ -786,30 +825,32 @@ class Repository:
         """Safe observed membership metadata ordered by provider_position only."""
         if not 1 <= limit <= 100 or offset < 0:
             raise ValueError("invalid highlight membership pagination")
-        owned = await self.pool.fetchval(
-            """select collection.id
-               from archived_highlight_collections collection
-               join archived_profiles profile on profile.id=collection.archived_profile_id
-               where profile.id=$1::uuid and profile.user_id=$2 and collection.id=$3::uuid""",
-            archived_profile_id,
-            user_id,
-            collection_id,
+        rows = await self.pool.fetch(
+            """select membership.id,membership.provider_namespace,membership.provider_item_id,
+                      membership.provider_position,membership.media_type,membership.caption,
+                      membership.published_at,membership.duration_seconds,
+                      membership.has_media_descriptor,membership.has_cover_descriptor,
+                      membership.last_observed_snapshot_id,membership.first_archived_at,
+                      membership.last_observed_at,membership.last_absent_at,
+                      membership.is_present_on_original,
+                      (membership.last_observed_snapshot_id=collection.latest_snapshot_id)
+                        as observed_in_latest_snapshot
+               from archived_profiles profile
+               join archived_highlight_collections collection
+                 on collection.archived_profile_id=profile.id and collection.id=$3::uuid
+               left join lateral (
+                 select * from archived_highlight_story_memberships
+                 where archived_highlight_collection_id=collection.id
+                 order by provider_position, first_archived_at, id
+                 limit $4::integer offset $5::integer
+               ) membership on true
+               where profile.id=$1::uuid and profile.user_id=$2
+               order by membership.provider_position nulls last, membership.first_archived_at, membership.id""",
+            archived_profile_id, user_id, collection_id, limit, offset,
         )
-        if owned is None:
+        if not rows:
             return None
-        return await self.pool.fetch(
-            """select id,provider_namespace,provider_item_id,provider_position,media_type,
-                      caption,published_at,duration_seconds,has_media_descriptor,
-                      has_cover_descriptor,first_archived_at,last_observed_at,last_absent_at,
-                      is_present_on_original
-               from archived_highlight_story_memberships
-               where archived_highlight_collection_id=$1::uuid
-               order by provider_position, first_archived_at, id
-               limit $2::integer offset $3::integer""",
-            collection_id,
-            limit,
-            offset,
-        )
+        return [] if rows[0]["id"] is None else rows
 
     async def create_owned_profile_full_sync_job(self, user_id, chat_id, profile_id, *, queue_name):
         """Atomically queue one tenant-owned full-history metadata sync."""

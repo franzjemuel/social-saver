@@ -10,6 +10,13 @@ Updated for v3.8.
 - Snapshot persistence is atomic per validated collection and idempotently
   refreshes known memberships or their observed position. Missing memberships
   are deliberately retained and never marked absent by this foundation.
+- A provider response's reported count is recorded separately from count
+  consistency and independently verified upstream completeness. A matching
+  count never alone marks a snapshot complete. Each response has a snapshot
+  marker so future read projections can emit `observed_in_latest_snapshot` and
+  distinguish memberships observed in the latest response from retained
+  historical memberships; partial responses therefore never claim a complete
+  current ordering.
 - This adds no API route, worker dispatch, provider token, paid call, media
   acquisition, R2 attachment, automatic job, or deployment behavior.
 

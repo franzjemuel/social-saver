@@ -579,7 +579,9 @@ def _highlight_membership(item_id, position, *, namespace='apify:tiktok-highligh
     )
 
 
-def _highlight_snapshot(collection_id, memberships=(), *, complete=True, reported_count=None):
+def _highlight_snapshot(
+    collection_id, memberships=(), *, complete=True, reported_count=None, upstream_verified=False,
+):
     return ArchivedHighlightCollectionSnapshot(
         provider_namespace='apify:tiktok-highlights',
         provider_collection_id=collection_id,
@@ -588,6 +590,7 @@ def _highlight_snapshot(collection_id, memberships=(), *, complete=True, reporte
         has_cover_descriptor=True,
         observation_complete=complete,
         memberships=tuple(memberships),
+        upstream_completeness_verified=upstream_verified,
     )
 
 
@@ -608,7 +611,7 @@ async def test_highlight_snapshots_are_tenant_safe_idempotent_and_non_destructiv
     initial = _highlight_snapshot('collection-a', (
         _highlight_membership('shared-item', 0),
         _highlight_membership('second-item', 1),
-    ))
+    ), upstream_verified=True)
     first = await repo.reconcile_owned_highlight_collection_snapshot(owner, profile, initial)
     assert first.collection_created is True
     assert (first.memberships_created, first.memberships_refreshed) == (2, 0)
@@ -620,9 +623,17 @@ async def test_highlight_snapshots_are_tenant_safe_idempotent_and_non_destructiv
     assert len(collections) == 1
     collection_id = collections[0]['id']
     assert collections[0]['last_snapshot_complete'] is True
+    assert collections[0]['last_snapshot_count_consistent'] is True
+    assert collections[0]['last_snapshot_provider_response_complete'] is True
+    assert collections[0]['last_snapshot_upstream_verified'] is True
     assert {'source_url', 'storage_key', 'provider_response'} & set(collections[0]) == set()
+    assert await repo.list_owned_archived_highlight_collections(other, other_profile) == []
     assert await repo.list_owned_archived_highlight_collections(other, profile) is None
+    assert await repo.list_owned_archived_highlight_collections(owner, uuid4()) is None
+    assert await repo.list_owned_archived_highlight_collections(owner, profile, offset=99) == []
     assert await repo.list_owned_archived_highlight_memberships(other, profile, collection_id) is None
+    assert await repo.list_owned_archived_highlight_memberships(owner, profile, uuid4()) is None
+    assert await repo.list_owned_archived_highlight_memberships(owner, profile, collection_id, offset=99) == []
     with pytest.raises(PermissionError):
         await repo.reconcile_owned_highlight_collection_snapshot(other, profile, initial)
 
@@ -640,7 +651,42 @@ async def test_highlight_snapshots_are_tenant_safe_idempotent_and_non_destructiv
     assert {'source_url', 'storage_key', 'provider_response'} & set(memberships[0]) == set()
     refreshed_collection = (await repo.list_owned_archived_highlight_collections(owner, profile))[0]
     assert refreshed_collection['last_snapshot_complete'] is False
+    assert refreshed_collection['last_snapshot_count_consistent'] is False
     assert refreshed_collection['last_absent_at'] is None
+    latest_snapshot_id = refreshed_collection['latest_snapshot_id']
+    observed_snapshot_ids = {row['provider_item_id']: row['last_observed_snapshot_id'] for row in memberships}
+    assert observed_snapshot_ids['second-item'] == latest_snapshot_id
+    assert observed_snapshot_ids['shared-item'] != latest_snapshot_id
+    latest_observed = {row['provider_item_id']: row['observed_in_latest_snapshot'] for row in memberships}
+    assert latest_observed == {'second-item': True, 'shared-item': False}
+
+    # A matching count is structural consistency, not independently verified
+    # upstream completeness. Neither response evidence alone is sufficient.
+    unverified = await repo.reconcile_owned_highlight_collection_snapshot(
+        owner,
+        profile,
+        _highlight_snapshot('unverified', (_highlight_membership('item', 0),), upstream_verified=False),
+    )
+    assert unverified.snapshot_complete is False
+    inconsistent = await repo.reconcile_owned_highlight_collection_snapshot(
+        owner,
+        profile,
+        _highlight_snapshot(
+            'inconsistent', (_highlight_membership('item', 0),), reported_count=2, upstream_verified=True,
+        ),
+    )
+    assert inconsistent.reported_count_consistent is False
+    assert inconsistent.snapshot_complete is False
+    completeness = {
+        row['provider_collection_id']: row
+        for row in await repo.list_owned_archived_highlight_collections(owner, profile)
+    }
+    assert completeness['unverified']['last_snapshot_count_consistent'] is True
+    assert completeness['unverified']['last_snapshot_provider_response_complete'] is True
+    assert completeness['unverified']['last_snapshot_upstream_verified'] is False
+    assert completeness['unverified']['last_snapshot_complete'] is False
+    assert completeness['inconsistent']['last_snapshot_count_consistent'] is False
+    assert completeness['inconsistent']['last_snapshot_complete'] is False
 
     # An item may be in two collections without duplication inside either one.
     second_collection = await repo.reconcile_owned_highlight_collection_snapshot(

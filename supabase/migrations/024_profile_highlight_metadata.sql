@@ -9,7 +9,16 @@ create table if not exists archived_highlight_collections (
   title text,
   reported_item_count integer check (reported_item_count is null or reported_item_count >= 0),
   has_cover_descriptor boolean not null default false,
+  -- These evidence fields deliberately distinguish a provider response from
+  -- independently verified upstream completeness. Matching a reported count
+  -- alone never establishes a complete upstream Highlight.
+  last_snapshot_count_consistent boolean not null default false,
+  last_snapshot_provider_response_complete boolean not null default false,
+  last_snapshot_upstream_verified boolean not null default false,
   last_snapshot_complete boolean not null default false,
+  -- Memberships stamped with this value were observed in the latest response.
+  -- Retained older rows are historical, not asserted current ordering.
+  latest_snapshot_id uuid not null default gen_random_uuid(),
   first_archived_at timestamptz not null default now(),
   last_observed_at timestamptz not null default now(),
   last_complete_observed_at timestamptz,
@@ -31,6 +40,7 @@ create table if not exists archived_highlight_story_memberships (
   duration_seconds double precision check (duration_seconds is null or duration_seconds >= 0),
   has_media_descriptor boolean not null default false,
   has_cover_descriptor boolean not null default false,
+  last_observed_snapshot_id uuid not null default gen_random_uuid(),
   first_archived_at timestamptz not null default now(),
   last_observed_at timestamptz not null default now(),
   last_absent_at timestamptz,
