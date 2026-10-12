@@ -1,5 +1,27 @@
 # Project state
 
+## TikTok native Telegram video geometry — review candidate
+
+- A hosted short-share TikTok link successfully completed worker resolution,
+  MP4 acquisition, and native Telegram delivery after PR #35, but the tester
+  reports a square video on fullscreen playback while an earlier direct-link
+  delivery appeared portrait. Both source downloads were logged at 807.05 KiB;
+  matching byte sizes alone do not establish identical files or geometry.
+- The worker previously forwarded the MP4 without re-encoding but did not pass
+  video width, height, or duration to Telegram's sendVideo. Proposed fix: use
+  bounded local ffprobe inspection of the actual downloaded MP4 to supply
+  measured dimensions (including display rotation) to the existing native
+  Telegram delivery interface; do not stretch square source files to 9:16.
+- Sanitized worker diagnostics capture a short source-file SHA-256 prefix,
+  source dimensions, and Telegram's returned dimensions to distinguish
+  provider-format variation from Telegram presentation. No user identity,
+  URLs, provider sessions, or Telegram bot tokens are logged.
+- **Not yet merged/deployed.** Hosted aspect-ratio acceptance requires the
+  tester to retry the same authorized direct and short links after approval,
+  verifying both playback geometry and matching source fingerprints.
+- No download-format change, transcoding, schema change, R2 write, paid Apify
+  call, production deployment, or change to unrelated archive features.
+
 ## TikTok share-link Quick Save — short URL support under review
 
 - The Telegram quick-save bot recognizes TikTok-owned `/t/<share-code>/` links
