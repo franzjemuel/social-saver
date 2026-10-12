@@ -1,6 +1,29 @@
 # Project state
 
-## TikTok native Telegram video geometry — review candidate
+## Native Telegram chat buttons — PR #37, review only
+
+- The bot navigation PR adds real persistent reply-keyboard buttons beside
+  the Telegram message composer: Open Archive, Add Profile, Save a Link and
+  Help. Navigation/help messages also offer actual inline Web App buttons.
+- The published archive home and Add Profile route were checked against the
+  live Lovable website. The first is the homepage, and the second is the
+  published /profiles/add route requiring Telegram Mini App context.
+- The Mini App URL can be overridden per environment. Bot menu setup is
+  best-effort and cannot disable the working link-to-MP4 route when Telegram
+  temporarily rejects menu configuration.
+- /archive with an Instagram URL retains its existing behavior; bare
+  /archive opens the archive workspace. /myarchive and existing TikTok
+  Quick Save are unchanged. Personal /status and notification outbox remain
+  separate planned increments.
+- Universal one-paste Instagram + TikTok links are the product direction;
+  Stories, Highlights, photo carousels, and profile URLs need separate
+  provider acceptance and may require an explicit profile-backup choice.
+- No migration, paid Apify call, provider extraction change, image resizing,
+  archive storage change, or production deployment. **Not merged/deployed.**
+- See docs/bot-chat-and-universal-links.md for the user experience and
+  capability roadmap.
+
+## TikTok native Telegram video geometry — merged and staging-accepted
 
 - A hosted short-share TikTok link successfully completed worker resolution,
   MP4 acquisition, and native Telegram delivery after PR #35, but the tester
@@ -16,13 +39,14 @@
   source dimensions, and Telegram's returned dimensions to distinguish
   provider-format variation from Telegram presentation. No user identity,
   URLs, provider sessions, or Telegram bot tokens are logged.
-- **Not yet merged/deployed.** Hosted aspect-ratio acceptance requires the
-  tester to retry the same authorized direct and short links after approval,
-  verifying both playback geometry and matching source fingerprints.
+- PR #36 merged and deployed to Railway staging on 2026-10-12. After the
+  rollout, the tester reported that the previously square-playing 12.4 MB
+  TikTok video now plays vertically inside Telegram. Source and receipt
+  fingerprints were not manually reconciled; precise root cause remains inferred.
 - No download-format change, transcoding, schema change, R2 write, paid Apify
   call, production deployment, or change to unrelated archive features.
 
-## TikTok share-link Quick Save — short URL support under review
+## TikTok share-link Quick Save — merged and staging-accepted
 
 - The Telegram quick-save bot recognizes TikTok-owned `/t/<share-code>/` links
   as well as `vm.tiktok.com` and `vt.tiktok.com` share links; it queues
@@ -36,9 +60,9 @@
 - The tester-supplied `www.tiktok.com/t/ZPLSLxk8n/` has been externally
   observed redirecting to a concrete `@theyuh_lvsh/video/...` URL.
   Fixture tests reproduce this redirect without contacting TikTok.
-- The short-link code is a **review candidate**, not yet merged or deployed.
-  TikTok may block redirect requests in the Railway environment; actual
-  end-to-end Telegram acceptance is still required.
+- PR #35 merged and deployed to Railway staging on 2026-10-12. The tester
+  confirmed the public TikTok /t/ link returns a native MP4 in the bot chat.
+  TikTok may still block other redirects; broader acceptance remains incremental.
 - TikTok photo/carousel chat delivery, Highlight media acquisition, and paid
   Apify activation remain separate work.
 
