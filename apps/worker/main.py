@@ -19,6 +19,7 @@ from apps.worker.processors.profile_import import process_import_profile, TikTok
 from apps.worker.processors.profile_sync import process_sync_profile, TikTokProfileSyncFailure
 from apps.worker.processors.profile_full_sync import process_full_sync_profile, TikTokProfileFullSyncFailure
 from apps.worker.processors.profile_highlight_sync import process_sync_profile_highlights, TikTokProfileHighlightSyncFailure
+from apps.worker.processors.highlight_story_media import process_archive_highlight_story_media
 from apps.worker.processors.profile_photo_delivery import process_deliver_profile_photos
 from providers.tiktok.validation import TikTokProfileValidationFailure
 from core.observability import init_observability, capture_job_exception
@@ -169,6 +170,10 @@ async def main():
                 elif job["job_type"] == "sync_profile_highlights":
                     async with provider_concurrency.for_platform("tiktok"):
                         result = await process_sync_profile_highlights(job, repo)
+                    success_message = None
+                elif job["job_type"] == "archive_highlight_story_media":
+                    async with provider_concurrency.for_platform("tiktok"):
+                        result = await process_archive_highlight_story_media(job, repo)
                     success_message = None
                 else:
                     raise ValueError(f"Unknown job type: {job['job_type']}")

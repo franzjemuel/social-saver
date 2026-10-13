@@ -120,6 +120,19 @@ Updated for v3.8.
   observations are `incomplete`, and an empty successful discovery is
   `complete`.
 
+## TikTok Highlight Story media archive — synthetic-only draft
+
+- Migration 025 models ordered Story media positions backed by the existing
+  private, SHA-256-deduplicated object store. Descriptor URLs and raw provider
+  output are intentionally absent from database records, PGMQ payloads, safe
+  API projections, and failure messages.
+- Synthetic-provider tests exercise worker-owned attachment, partial recovery,
+  retry-safe attachment, and tenant-authorized playback. The default provider
+  fails closed; no paid Actor call or live TikTok acquisition is enabled.
+- A hardened video-descriptor transport, durable paid-invocation ledger,
+  provider licensing approval, and separately authorized one-Story staging
+  acceptance remain prerequisites to activation.
+
 ## Profile archive foundation — 2026-10-04
 
 - Added a provider-neutral, tenant-private profile archive schema: profiles,

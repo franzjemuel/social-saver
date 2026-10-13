@@ -26,6 +26,7 @@ from providers.base import (
     ArchivedHighlightStoryMembership,
     ArchivedPost,
     HighlightDiscoveryResult,
+    HighlightStoryMediaDescriptor,
 )
 from ops import staging_canary
 
@@ -570,6 +571,56 @@ async def test_profile_sync_jobs_and_presence_reconciliation_are_tenant_safe(dat
     assert await database.pool.fetchval('select deleted_at is null from stored_objects where id=$1', object_id)
     posts = await repo.list_owned_archived_profile_posts(owner, profile)
     assert next(row for row in posts if row['platform_post_id'] == 'removed')['has_archived_media'] is True
+
+
+async def test_highlight_story_media_assets_are_tenant_scoped_ordered_and_idempotent(database):
+    """Migration 025: no descriptors persist, storage attachment is owner-only."""
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','highlight-media-owner','owner') returning id""", owner,
+    )
+    collection = await database.pool.fetchval(
+        """insert into archived_highlight_collections
+               (archived_profile_id,provider_namespace,provider_collection_id)
+           values($1,'synthetic','collection') returning id""", profile,
+    )
+    membership = await database.pool.fetchval(
+        """insert into archived_highlight_story_memberships
+               (archived_highlight_collection_id,provider_namespace,provider_item_id,provider_position,media_type)
+           values($1,'synthetic','story',0,'photo') returning id""", collection,
+    )
+    descriptors = (
+        HighlightStoryMediaDescriptor(0, 'photo', ('https://never-persist.invalid/a',)),
+        HighlightStoryMediaDescriptor(1, 'photo', ('https://never-persist.invalid/b',)),
+    )
+    first = await repo.upsert_owned_highlight_story_media_assets(owner, profile, membership, descriptors)
+    assert first == {'inserted': 2, 'refreshed': 0}
+    assert await repo.upsert_owned_highlight_story_media_assets(other, profile, membership, descriptors) is None
+    pending = await repo.list_owned_highlight_story_media_assets(owner, profile, membership)
+    assert [row['position'] for row in pending] == [0, 1]
+    assert await repo.list_owned_highlight_story_media_assets(other, profile, membership) == []
+    digest = hashlib.sha256(b'highlight-story-media-object').hexdigest()
+    object_id = await database.pool.fetchval(
+        """insert into stored_objects(sha256,storage_key,size_bytes,content_type)
+           values($1,'private-highlight-media',1,'image/jpeg') returning id""", digest,
+    )
+    assert await repo.attach_owned_highlight_story_media_object(owner, profile, pending[0]['id'], object_id)
+    # Reordered metadata does not mutate an attached asset's durable identity.
+    refreshed = await repo.upsert_owned_highlight_story_media_assets(
+        owner, profile, membership,
+        (HighlightStoryMediaDescriptor(0, 'video', ('https://never-persist.invalid/changed',)),),
+    )
+    assert refreshed == {'inserted': 0, 'refreshed': 0}
+    playback = await repo.get_owned_highlight_story_media_playback(owner, profile, membership, 0)
+    assert playback['storage_key'] == 'private-highlight-media'
+    assert await repo.get_owned_highlight_story_media_playback(other, profile, membership, 0) is None
+    assert await database.pool.fetchval(
+        "select count(*) from archived_highlight_story_media_assets where archived_highlight_story_membership_id=$1",
+        membership,
+    ) == 2
 
 
 async def test_profile_highlight_sync_jobs_are_tenant_safe_atomic_and_coalesced(database):
