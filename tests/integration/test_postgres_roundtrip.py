@@ -623,6 +623,43 @@ async def test_highlight_story_media_assets_are_tenant_scoped_ordered_and_idempo
     ) == 2
 
 
+async def test_highlight_provider_invocation_budget_is_tenant_safe_and_nonreusable(database):
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','ledger-account','owner') returning id""", owner,
+    )
+    job = await database.pool.fetchval(
+        """insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel)
+           values($1,1,'sync_profile_highlights',jsonb_build_object('profile_id',$2::uuid),'mini_app')
+           returning id""", owner, profile,
+    )
+    assert await repo.initialize_owned_highlight_provider_budget(owner, job, profile, 650_000)
+    assert await repo.initialize_owned_highlight_provider_budget(other, job, profile, 650_000) is None
+    discovery = await repo.reserve_owned_highlight_provider_invocation(
+        owner, job, profile, provider_namespace='synthetic', operation='collection_list', maximum_micro_usd=100_000,
+    )
+    enumeration = await repo.reserve_owned_highlight_provider_invocation(
+        owner, job, profile, provider_namespace='synthetic', operation='collection_items', maximum_micro_usd=550_000,
+    )
+    assert discovery['sequence'] == 0 and enumeration['sequence'] == 1
+    assert await repo.reserve_owned_highlight_provider_invocation(
+        owner, job, profile, provider_namespace='synthetic', operation='collection_items', maximum_micro_usd=1,
+    ) is None
+    claimed = await repo.claim_owned_highlight_provider_invocation(owner, job, discovery['id'])
+    assert claimed and claimed['status'] == 'started'
+    assert await repo.claim_owned_highlight_provider_invocation(owner, job, discovery['id']) is None
+    indeterminate = await repo.finish_owned_highlight_provider_invocation(
+        owner, job, discovery['id'], status='indeterminate', error_code='timeout_ambiguous',
+    )
+    assert indeterminate['status'] == 'indeterminate'
+    assert await repo.finish_owned_highlight_provider_invocation(
+        owner, job, discovery['id'], status='succeeded', receipt='later',
+    ) is None
+
+
 async def test_profile_highlight_sync_jobs_are_tenant_safe_atomic_and_coalesced(database):
     """Exercise the new job SQL, ownership joins, PGMQ and execution latch."""
     repo = Repository(database.pool)

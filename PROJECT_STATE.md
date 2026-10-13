@@ -120,6 +120,15 @@ Updated for v3.8.
   observations are `incomplete`, and an empty successful discovery is
   `complete`.
 
+## TikTok Highlight provider invocation ledger — draft
+
+- Migration 026 provides tenant-owned, server-budgeted reservation records for
+  future paid Highlight calls. It keeps only operation, integer micro-USD
+  reservation, opaque future receipt, and normalized status; tokens, raw
+  outputs, descriptors, and signed URLs are excluded.
+- Ambiguous dispatched calls become durable `indeterminate` records and do not
+  free budget for automatic retry. No Apify provider is registered or enabled.
+
 ## TikTok Highlight Story media archive — synthetic-only draft
 
 - Migration 025 models ordered Story media positions backed by the existing
