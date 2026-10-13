@@ -6,7 +6,11 @@ import pytest
 from fastapi import HTTPException
 
 import apps.api.main as api
-from apps.worker.processors.highlight_story_media import process_archive_highlight_story_media
+from apps.worker.main import complete_highlight_story_media_failure
+from apps.worker.processors.highlight_story_media import (
+    TikTokHighlightStoryMediaFailure,
+    process_archive_highlight_story_media,
+)
 from core.highlight_media import HighlightStoryMediaService
 from core.media_download import DownloadedAsset
 from providers.base import HighlightStoryMediaDescriptor, SourceUnavailable
@@ -64,9 +68,9 @@ async def test_synthetic_story_media_pipeline_keeps_descriptors_in_memory(tmp_pa
     repo = Repo()
     result = await process_archive_highlight_story_media(
         {"id": "job", "user_id": "tenant", "input": {"profile_id": str(PROFILE), "membership_id": str(MEMBERSHIP)}},
-        repo, Provider(), Downloader(), Service(),
+        repo, Provider(), Downloader(), Service(), execution_enabled=True,
     )
-    assert result == {"assets_discovered": 1, "assets_seeded": 1, "attached": 1, "uploaded": 1, "reused": 0, "failures": 0, "pending_after": 0}
+    assert result == {"assets_discovered": 1, "assets_seeded": 1, "attached": 1, "uploaded": 1, "reused": 0, "failures": 0, "pending_after": 0, "outcome": "complete"}
     assert repo.seeded[0].candidates == ("https://ephemeral.invalid/video",)
     assert not repo.failures
 
@@ -93,11 +97,58 @@ async def test_partial_story_failure_preserves_other_position_and_records_safe_c
             return DownloadedAsset(destination, 5, "b" * 64, "image/jpeg")
     result = await process_archive_highlight_story_media(
         {"id": "job", "user_id": "tenant", "input": {"profile_id": str(PROFILE), "membership_id": str(MEMBERSHIP)}},
-        repo, Photos(), FailingDownloader(), Service(),
+        repo, Photos(), FailingDownloader(), Service(), execution_enabled=True,
     )
     assert result["attached"] == result["uploaded"] == 1
     assert result["failures"] == result["pending_after"] == 1
+    assert result["outcome"] == "partial"
     assert repo.failures[-1][-1] == "acquisition_or_storage_failed"
+
+
+@pytest.mark.asyncio
+async def test_disabled_highlight_media_fails_before_provider_or_repository_work():
+    class NeverCalled:
+        def __getattr__(self, _):
+            raise AssertionError("disabled job must not resolve a target or provider")
+
+    with pytest.raises(TikTokHighlightStoryMediaFailure) as error:
+        await process_archive_highlight_story_media(
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": str(PROFILE), "membership_id": str(MEMBERSHIP)}},
+            NeverCalled(), execution_enabled=False,
+        )
+    assert error.value.code == "highlight_media_feature_disabled"
+
+
+@pytest.mark.asyncio
+async def test_unregistered_highlight_provider_is_terminal_not_retryable():
+    with pytest.raises(TikTokHighlightStoryMediaFailure) as error:
+        await process_archive_highlight_story_media(
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": str(PROFILE), "membership_id": str(MEMBERSHIP)}},
+            Repo(), execution_enabled=True,
+        )
+    assert error.value.code == "highlight_media_provider_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_terminal_highlight_media_failure_archives_without_bot_notification():
+    calls = []
+
+    class FailureRepo:
+        async def fail_job(self, *args):
+            calls.append(("fail", args))
+
+    class Queue:
+        async def archive(self, message_id):
+            calls.append(("archive", message_id))
+
+    await complete_highlight_story_media_failure(
+        FailureRepo(), Queue(), {"msg_id": 41}, "job",
+        TikTokHighlightStoryMediaFailure("highlight_media_feature_disabled"),
+    )
+    assert calls == [
+        ("fail", ("job", "HIGHLIGHT_MEDIA_FEATURE_DISABLED", "highlight_media_feature_disabled")),
+        ("archive", 41),
+    ]
 
 
 @pytest.mark.asyncio
