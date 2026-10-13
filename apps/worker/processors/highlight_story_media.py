@@ -4,19 +4,20 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from core.highlight_media import HighlightStoryMediaService
+from core.config import settings
 from providers.base import (
     HighlightStoryMediaDescriptor,
-    HighlightStoryMediaProvider,
     SourceUnavailable,
 )
 from providers.tiktok.highlight_media_download import TikTokHighlightMediaDownloader
 
 
-class DisabledHighlightStoryMediaProvider(HighlightStoryMediaProvider):
-    """Fail closed: no live descriptor source is registered in this increment."""
+class TikTokHighlightStoryMediaFailure(RuntimeError):
+    """Terminal, browser-safe failure for the disabled/manual-only boundary."""
 
-    async def resolve_story_media(self, **_):
-        raise SourceUnavailable("TikTok Highlight media acquisition is not enabled")
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
 
 
 def _validate_descriptors(value):
@@ -35,16 +36,30 @@ def _validate_descriptors(value):
     return value
 
 
-async def process_archive_highlight_story_media(job, repo, provider=None, downloader=None, media_service=None):
+async def process_archive_highlight_story_media(
+    job, repo, provider=None, downloader=None, media_service=None, execution_enabled=None,
+):
     """Persist available positions; descriptors remain in process memory only."""
+    # This check comes before every ownership/provider lookup. A stale queue
+    # message cannot consume provider work or fall into generic retry handling
+    # while the server-owned feature remains disabled.
+    if execution_enabled is None:
+        execution_enabled = settings.tiktok_highlights_media_enabled
+    if not execution_enabled:
+        raise TikTokHighlightStoryMediaFailure("highlight_media_feature_disabled")
     payload = job.get("input") or {}
     profile_id, membership_id = payload.get("profile_id"), payload.get("membership_id")
     if not isinstance(profile_id, str) or not isinstance(membership_id, str):
-        raise SourceUnavailable("Highlight media request is invalid")
+        raise TikTokHighlightStoryMediaFailure("highlight_media_request_invalid")
     target = await repo.get_owned_highlight_story_media_target(job["user_id"], profile_id, membership_id)
     if target is None:
-        raise SourceUnavailable("Highlight media request is unavailable")
-    provider = provider or DisabledHighlightStoryMediaProvider()
+        raise TikTokHighlightStoryMediaFailure("highlight_media_not_found")
+    if provider is None:
+        # This increment deliberately registers no live descriptor source. If
+        # an operator enables the route without injecting an approved provider,
+        # fail once and leave the queue clean rather than treating this as a
+        # transient TikTok/Instagram outage.
+        raise TikTokHighlightStoryMediaFailure("highlight_media_provider_unavailable")
     try:
         descriptors = _validate_descriptors(await provider.resolve_story_media(
             username=target["username"], provider_namespace=target["provider_namespace"],
@@ -61,7 +76,7 @@ async def process_archive_highlight_story_media(job, repo, provider=None, downlo
         job["user_id"], profile_id, membership_id, descriptors,
     )
     if seeded is None:
-        raise SourceUnavailable("Highlight media request is unavailable")
+        raise TikTokHighlightStoryMediaFailure("highlight_media_not_found")
     pending = await repo.list_owned_highlight_story_media_assets(job["user_id"], profile_id, membership_id)
     by_position = {item.position: item for item in descriptors}
     downloader = downloader or TikTokHighlightMediaDownloader()
@@ -101,8 +116,12 @@ async def process_archive_highlight_story_media(job, repo, provider=None, downlo
                 await repo.update_job_progress(
                     job["id"], min(99, int(index * 100 / max(1, len(pending)))),
                 )
+    pending_after = max(0, len(pending) - attached)
     return {
         "assets_discovered": len(descriptors), "assets_seeded": seeded["inserted"],
         "attached": attached, "uploaded": uploaded, "reused": reused,
-        "failures": failures, "pending_after": max(0, len(pending) - attached),
+        "failures": failures, "pending_after": pending_after,
+        # The queue job completed its bounded work; this is deliberately not a
+        # claim that every Story asset is privately archived.
+        "outcome": "complete" if failures == 0 and pending_after == 0 else "partial",
     }

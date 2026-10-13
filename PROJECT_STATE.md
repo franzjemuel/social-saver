@@ -127,8 +127,12 @@ Updated for v3.8.
   output are intentionally absent from database records, PGMQ payloads, safe
   API projections, and failure messages.
 - Synthetic-provider tests exercise worker-owned attachment, partial recovery,
-  retry-safe attachment, and tenant-authorized playback. The default provider
-  fails closed; no paid Actor call or live TikTok acquisition is enabled.
+  retry-safe attachment, and tenant-authorized playback. Disabled or
+  unregistered descriptor sources fail terminally and archive their queue
+  message without generic provider retries or Telegram notices. A completed
+  queue job reports `partial` whenever any position remains pending or fails;
+  it never claims the full Story was archived. No paid Actor call or live
+  TikTok acquisition is enabled.
 - A hardened video-descriptor transport, durable paid-invocation ledger,
   provider licensing approval, and separately authorized one-Story staging
   acceptance remain prerequisites to activation.
