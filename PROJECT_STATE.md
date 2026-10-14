@@ -142,9 +142,14 @@ Updated for v3.8.
   queue job reports `partial` whenever any position remains pending or fails;
   it never claims the full Story was archived. No paid Actor call or live
   TikTok acquisition is enabled.
-- A hardened video-descriptor transport, durable paid-invocation ledger,
-  provider licensing approval, and separately authorized one-Story staging
-  acceptance remain prerequisites to activation.
+- The draft hardened Highlight MP4 descriptor transport reuses the pinned-IP,
+  redirect-validating HTTPS framing transport already used for photos. It
+  streams bounded files, validates ISO-BMFF structure and SHA-256 locally, and
+  hands only verified temporary bytes to the existing private-object pipeline.
+  It has no registered live descriptor provider and has not made any hosted
+  acquisition.
+- Provider licensing approval and a separately authorized, budget-reserved
+  one-Story staging acceptance remain prerequisites to activation.
 
 ## Profile archive foundation — 2026-10-04
 

@@ -60,9 +60,10 @@
   only to an approved asynchronous provider run/receipt flow; keep live Actor
   registration disabled until licensing and staged-spend approval.
 - [ ] Review the synthetic-only Highlight Story media archive foundation. Keep
-  live descriptor resolution disabled pending provider licensing, a hardened
-  video descriptor transport, durable invocation accounting, and a one-Story
-  staging approval.
+  live descriptor resolution disabled pending provider licensing, reviewed
+  durable invocation accounting, and a one-Story staging approval. The
+  hardened MP4 descriptor transport is separately test-covered but has no live
+  provider registration or hosted acceptance.
 - [ ] Build Add Profile UI (input, preview/confirm, and progress) in the frontend; existing archive browse/detail and playback remain separate.
 - [ ] Add frontend video-backup/progress controls and later bounded resumable larger-history batches. See `docs/profile-archive-media-next-steps.md` for photo/carousel, rescan/removal, and historical-engagement design.
 - [ ] Add a Mini App control that calls the prepared-message endpoint and then Telegram's native `shareMessage`, followed by one bounded hosted sharing acceptance.
