@@ -151,6 +151,22 @@ Updated for v3.8.
 - Provider licensing approval and a separately authorized, budget-reserved
   one-Story staging acceptance remain prerequisites to activation.
 
+## TikTok Highlight descriptor-to-archive bridge — synthetic-only draft
+
+- A test-injected adapter can now translate the isolated Apify POC's ordered
+  Story records into worker-only video/photo descriptor positions for one
+  already-owned Story. It is not registered in hosted worker configuration,
+  reads no token, and always calls the POC contract with live authorization
+  disabled.
+- The Highlight media worker can optionally reserve, claim, and settle one
+  existing migration-026 ledger invocation before descriptor resolution. This
+  policy is an injected worker authority, never browser or PGMQ input. An
+  ambiguous provider result becomes terminal/indeterminate so ordinary queue
+  redelivery cannot silently purchase a second invocation.
+- The normal synthetic media path and existing TikTok Quick Save route are
+  unchanged. No new migration, provider activation, paid call, media download,
+  R2 hosted write, deployment, or customer-visible API behavior is enabled.
+
 ## Profile archive foundation — 2026-10-04
 
 - Added a provider-neutral, tenant-private profile archive schema: profiles,

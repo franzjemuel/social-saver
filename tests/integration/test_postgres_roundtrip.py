@@ -660,6 +660,34 @@ async def test_highlight_provider_invocation_budget_is_tenant_safe_and_nonreusab
     ) is None
 
 
+async def test_highlight_story_media_job_can_use_same_tenant_owned_invocation_ledger(database):
+    """The single-Story worker uses migration 026 without a second ledger."""
+    repo = Repository(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','ledger-media-account','owner') returning id""", owner,
+    )
+    job = await database.pool.fetchval(
+        """insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel)
+           values($1,1,'archive_highlight_story_media',
+                  jsonb_build_object('profile_id',$2::uuid,'membership_id',gen_random_uuid()),'mini_app')
+           returning id""", owner, profile,
+    )
+    assert await repo.initialize_owned_highlight_provider_budget(owner, job, profile, 10)
+    assert await repo.initialize_owned_highlight_provider_budget(other, job, profile, 10) is None
+    invocation = await repo.reserve_owned_highlight_provider_invocation(
+        owner, job, profile, provider_namespace='synthetic', operation='collection_items', maximum_micro_usd=10,
+    )
+    assert invocation
+    assert await repo.claim_owned_highlight_provider_invocation(owner, job, invocation['id'])
+    done = await repo.finish_owned_highlight_provider_invocation(
+        owner, job, invocation['id'], status='succeeded', error_code=None,
+    )
+    assert done['status'] == 'succeeded'
+
+
 async def test_profile_highlight_sync_jobs_are_tenant_safe_atomic_and_coalesced(database):
     """Exercise the new job SQL, ownership joins, PGMQ and execution latch."""
     repo = Repository(database.pool)

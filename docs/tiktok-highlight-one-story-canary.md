@@ -1,13 +1,30 @@
 # TikTok Highlight one-Story staging acceptance
 
-This runbook is intentionally inactive until provider licensing, migration 025,
-durable per-invocation budget accounting, and an explicit staging authorization
-have all been approved. It never authorizes production use.
+This runbook is intentionally inactive until provider licensing, migrations
+025 and 026, durable per-invocation budget accounting, and an explicit staging
+authorization have all been approved. It never authorizes production use.
+
+## Required merge and rollout order
+
+1. Merge the Highlight Story media foundation (PR #38) before its durable
+   provider-invocation ledger (PR #39), then merge the hardened MP4 transport
+   (PR #40), and finally the descriptor-to-archive bridge built on that stack.
+   Each PR is reviewed against the immediately preceding main commit; do not
+   squash a later stack member into main before its dependency is present.
+2. Apply immutable migration 025 before any Highlight media job can be queued.
+   It creates only metadata/attachment rows and contains no descriptor URL.
+3. Apply immutable migration 026 before any approved external provider
+   invocation. It supplies the budget/invocation ledger used to make ambiguous
+   external outcomes terminal rather than automatically repeatable.
+4. Keep both Highlight feature gates off through these merges and migrations.
+   The bridge remains unregistered until a separate provider-license and
+   spending authorization enables a reviewed worker factory.
 
 ## Preconditions
 
-1. Staging API and worker run the reviewed feature commit; migration 025 is
-   applied through the normal controlled release procedure.
+1. Staging API and worker run the reviewed feature commit; migrations 025 and
+   026 are applied through the normal controlled release procedure and their
+   schema head is verified before the feature gates change.
 2. The worker has private R2 write access; API credentials remain read/presign
    only. Verify a bounded storage probe separately.
 3. The live Highlight provider is explicitly enabled only in staging and the

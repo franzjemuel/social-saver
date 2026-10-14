@@ -891,7 +891,13 @@ class Repository:
         return [] if rows[0]["id"] is None else rows
 
     async def initialize_owned_highlight_provider_budget(self, user_id, job_id, profile_id, budget_micro_usd):
-        """Create a server-owned budget for one existing Highlight-sync job."""
+        """Create a server-owned budget for one approved Highlight job.
+
+        The ledger schema is intentionally shared by metadata synchronization
+        and the separately coalesced single-Story media job.  Both job inputs
+        are ownership-bound to the same archived profile; neither permits a
+        browser to select a provider invocation or budget.
+        """
         if not isinstance(budget_micro_usd, int) or budget_micro_usd <= 0:
             raise ValueError("invalid highlight provider budget")
         return await self.pool.fetchrow(
@@ -899,7 +905,8 @@ class Repository:
                    (job_id,user_id,archived_profile_id,budget_micro_usd)
                select job.id,$1,profile.id,$4
                from jobs job join archived_profiles profile on profile.id=$3::uuid
-               where job.id=$2::uuid and job.user_id=$1 and job.job_type='sync_profile_highlights'
+               where job.id=$2::uuid and job.user_id=$1
+                 and job.job_type in ('sync_profile_highlights','archive_highlight_story_media')
                  and job.input->>'profile_id'=$3::uuid::text and profile.user_id=$1
                on conflict(job_id) do update set updated_at=now()
                where highlight_provider_job_budgets.user_id=excluded.user_id
