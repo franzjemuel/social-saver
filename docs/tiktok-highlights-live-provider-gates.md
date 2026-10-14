@@ -19,3 +19,9 @@ database migration review for the invocation ledger, and staged manual
 activation. No token, signed descriptor, raw Actor response, media download,
 R2 write, automatic polling, or customer-visible enablement belongs in this
 adapter PR.
+
+The migration-026 ledger foundation reserves integer micro-USD before any
+future dispatch. A started call that times out ambiguously becomes
+`indeterminate`; its reservation is never automatically released or retried.
+It remains bookkeeping only until a separately reviewed factory uses an
+asynchronous Actor run receipt.

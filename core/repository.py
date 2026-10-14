@@ -890,6 +890,97 @@ class Repository:
             return None
         return [] if rows[0]["id"] is None else rows
 
+    async def initialize_owned_highlight_provider_budget(self, user_id, job_id, profile_id, budget_micro_usd):
+        """Create a server-owned budget for one existing Highlight-sync job."""
+        if not isinstance(budget_micro_usd, int) or budget_micro_usd <= 0:
+            raise ValueError("invalid highlight provider budget")
+        return await self.pool.fetchrow(
+            """insert into highlight_provider_job_budgets
+                   (job_id,user_id,archived_profile_id,budget_micro_usd)
+               select job.id,$1,profile.id,$4
+               from jobs job join archived_profiles profile on profile.id=$3::uuid
+               where job.id=$2::uuid and job.user_id=$1 and job.job_type='sync_profile_highlights'
+                 and job.input->>'profile_id'=$3::uuid::text and profile.user_id=$1
+               on conflict(job_id) do update set updated_at=now()
+               where highlight_provider_job_budgets.user_id=excluded.user_id
+                 and highlight_provider_job_budgets.archived_profile_id=excluded.archived_profile_id
+                 and highlight_provider_job_budgets.budget_micro_usd=excluded.budget_micro_usd
+               returning *""",
+            user_id, job_id, profile_id, budget_micro_usd,
+        )
+
+    async def reserve_owned_highlight_provider_invocation(
+        self, user_id, job_id, profile_id, *, provider_namespace, operation, maximum_micro_usd,
+    ):
+        """Atomically reserve a non-reusable slice of a Highlight job budget.
+
+        Reservations are never released by automatic retry. In particular, an
+        ambiguous timeout consumes its budget until an operator reconciles a
+        durable provider receipt in a later reviewed phase.
+        """
+        if (not isinstance(maximum_micro_usd, int) or maximum_micro_usd <= 0
+                or operation not in {"collection_list", "collection_items"}
+                or not isinstance(provider_namespace, str) or not provider_namespace):
+            raise ValueError("invalid highlight provider invocation")
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                await con.execute(
+                    "select pg_advisory_xact_lock(hashtextextended($1,0))",
+                    f"highlight-provider-budget:{user_id}:{job_id}",
+                )
+                budget = await con.fetchrow(
+                    """select budget_micro_usd,reserved_micro_usd
+                       from highlight_provider_job_budgets
+                       where job_id=$1::uuid and user_id=$2 and archived_profile_id=$3::uuid
+                       for update""",
+                    job_id, user_id, profile_id,
+                )
+                if budget is None or budget["reserved_micro_usd"] + maximum_micro_usd > budget["budget_micro_usd"]:
+                    return None
+                sequence = await con.fetchval(
+                    "select coalesce(max(sequence)+1,0) from highlight_provider_invocations where job_id=$1::uuid",
+                    job_id,
+                )
+                invocation = await con.fetchrow(
+                    """insert into highlight_provider_invocations
+                           (job_id,provider_namespace,operation,sequence,reserved_micro_usd,status)
+                       values($1::uuid,$2,$3,$4,$5,'reserved') returning *""",
+                    job_id, provider_namespace, operation, sequence, maximum_micro_usd,
+                )
+                await con.execute(
+                    """update highlight_provider_job_budgets
+                       set reserved_micro_usd=reserved_micro_usd+$2,updated_at=now()
+                       where job_id=$1::uuid""",
+                    job_id, maximum_micro_usd,
+                )
+                return invocation
+
+    async def claim_owned_highlight_provider_invocation(self, user_id, job_id, invocation_id):
+        """Claim once before dispatching an external call; redelivery returns None."""
+        return await self.pool.fetchrow(
+            """update highlight_provider_invocations invocation
+               set status='started',started_at=now()
+               from highlight_provider_job_budgets budget
+               where invocation.id=$3::uuid and invocation.job_id=budget.job_id
+                 and budget.job_id=$2::uuid and budget.user_id=$1 and invocation.status='reserved'
+               returning invocation.*""",
+            user_id, job_id, invocation_id,
+        )
+
+    async def finish_owned_highlight_provider_invocation(self, user_id, job_id, invocation_id, *, status, receipt=None, error_code=None):
+        """Persist only normalized terminal state; raw actor output never enters SQL."""
+        if status not in {"succeeded", "failed_known", "indeterminate"}:
+            raise ValueError("invalid highlight provider invocation status")
+        return await self.pool.fetchrow(
+            """update highlight_provider_invocations invocation
+               set status=$4,provider_run_receipt=$5,error_code=$6,finished_at=now()
+               from highlight_provider_job_budgets budget
+               where invocation.id=$3::uuid and invocation.job_id=budget.job_id
+                 and budget.job_id=$2::uuid and budget.user_id=$1 and invocation.status='started'
+               returning invocation.*""",
+            user_id, job_id, invocation_id, status, receipt, error_code,
+        )
+
     async def upsert_owned_highlight_story_media_assets(self, user_id, profile_id, membership_id, assets):
         """Record safe asset shape, never acquisition descriptors, for one Story.
 
