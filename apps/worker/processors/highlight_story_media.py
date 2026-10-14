@@ -1,5 +1,6 @@
 """Synthetic-only, worker-owned archival of one Highlight Story's media."""
 
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -7,6 +8,7 @@ from core.highlight_media import HighlightStoryMediaService
 from core.config import settings
 from providers.base import (
     HighlightStoryMediaDescriptor,
+    TerminalProviderError,
     SourceUnavailable,
 )
 from providers.tiktok.highlight_media_download import TikTokHighlightMediaDownloader
@@ -18,6 +20,32 @@ class TikTokHighlightStoryMediaFailure(RuntimeError):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+@dataclass(frozen=True)
+class HighlightProviderExecutionPolicy:
+    """Explicit, worker-only authority for a single paid provider request.
+
+    This is intentionally not read from a queue payload or environment.  It
+    makes the future live dependency opt-in, reserves a non-reusable budget
+    slice before dispatch, and leaves ambiguous calls terminal rather than
+    letting PGMQ redelivery purchase another invocation.
+    """
+
+    provider_namespace: str
+    job_budget_micro_usd: int
+    maximum_invocation_micro_usd: int
+    operation: str = "collection_items"
+
+    def __post_init__(self):
+        if (
+            not self.provider_namespace
+            or self.operation != "collection_items"
+            or self.job_budget_micro_usd <= 0
+            or self.maximum_invocation_micro_usd <= 0
+            or self.maximum_invocation_micro_usd > self.job_budget_micro_usd
+        ):
+            raise ValueError("invalid Highlight provider execution policy")
 
 
 def _validate_descriptors(value):
@@ -36,8 +64,27 @@ def _validate_descriptors(value):
     return value
 
 
+async def _finish_provider_invocation(repo, job, invocation, *, status, error_code=None):
+    """Durably settle a dispatched external call before later media work.
+
+    If the ledger write itself is ambiguous, do not continue to persistence or
+    permit ordinary queue redelivery to reach the paid provider again.
+    """
+    try:
+        finished = await repo.finish_owned_highlight_provider_invocation(
+            job["user_id"], job["id"], invocation["id"], status=status,
+            error_code=error_code,
+        )
+    except Exception:
+        raise TikTokHighlightStoryMediaFailure("highlight_media_provider_receipt_unavailable") from None
+    if finished is None:
+        raise TikTokHighlightStoryMediaFailure("highlight_media_provider_receipt_unavailable")
+    return finished
+
+
 async def process_archive_highlight_story_media(
     job, repo, provider=None, downloader=None, media_service=None, execution_enabled=None,
+    provider_execution_policy=None,
 ):
     """Persist available positions; descriptors remain in process memory only."""
     # This check comes before every ownership/provider lookup. A stale queue
@@ -60,15 +107,60 @@ async def process_archive_highlight_story_media(
         # fail once and leave the queue clean rather than treating this as a
         # transient TikTok/Instagram outage.
         raise TikTokHighlightStoryMediaFailure("highlight_media_provider_unavailable")
+    if getattr(provider, "requires_execution_policy", False) and provider_execution_policy is None:
+        # An adapter that can call a paid source cannot be accidentally used
+        # through the otherwise useful synthetic processor seam.
+        raise TikTokHighlightStoryMediaFailure("highlight_media_provider_policy_required")
+    if provider_execution_policy is not None:
+        if provider_execution_policy.provider_namespace != target["provider_namespace"]:
+            raise TikTokHighlightStoryMediaFailure("highlight_media_provider_mismatch")
+        budget = await repo.initialize_owned_highlight_provider_budget(
+            job["user_id"], job["id"], profile_id, provider_execution_policy.job_budget_micro_usd,
+        )
+        if budget is None:
+            raise TikTokHighlightStoryMediaFailure("highlight_media_provider_budget_unavailable")
+        invocation = await repo.reserve_owned_highlight_provider_invocation(
+            job["user_id"], job["id"], profile_id,
+            provider_namespace=provider_execution_policy.provider_namespace,
+            operation=provider_execution_policy.operation,
+            maximum_micro_usd=provider_execution_policy.maximum_invocation_micro_usd,
+        )
+        if invocation is None:
+            raise TikTokHighlightStoryMediaFailure("highlight_media_provider_budget_exhausted")
+        claimed = await repo.claim_owned_highlight_provider_invocation(job["user_id"], job["id"], invocation["id"])
+        if claimed is None:
+            raise TikTokHighlightStoryMediaFailure("highlight_media_provider_invocation_unavailable")
+    else:
+        invocation = None
+
     try:
-        descriptors = _validate_descriptors(await provider.resolve_story_media(
+        raw_descriptors = await provider.resolve_story_media(
             username=target["username"], provider_namespace=target["provider_namespace"],
             provider_collection_id=target["provider_collection_id"], provider_item_id=target["provider_item_id"],
-        ))
+        )
+    except TerminalProviderError:
+        if invocation is not None:
+            await _finish_provider_invocation(repo, job, invocation, status="failed_known", error_code="provider_known_failure")
+        raise TikTokHighlightStoryMediaFailure("highlight_media_provider_failed") from None
     except SourceUnavailable:
-        raise
+        if invocation is None:
+            # Preserve the existing synthetic/manual retry behavior. Only an
+            # explicitly budgeted external invocation is made terminal to
+            # avoid paying twice after an ambiguous provider outcome.
+            raise
+        await _finish_provider_invocation(repo, job, invocation, status="indeterminate", error_code="provider_ambiguous_failure")
+        raise TikTokHighlightStoryMediaFailure("highlight_media_provider_indeterminate") from None
     except Exception:
-        raise SourceUnavailable("TikTok Highlight media resolution failed") from None
+        if invocation is not None:
+            await _finish_provider_invocation(repo, job, invocation, status="indeterminate", error_code="provider_ambiguous_failure")
+        raise TikTokHighlightStoryMediaFailure("highlight_media_provider_indeterminate") from None
+
+    if invocation is not None:
+        await _finish_provider_invocation(repo, job, invocation, status="succeeded")
+    try:
+        descriptors = _validate_descriptors(raw_descriptors)
+    except SourceUnavailable:
+        raise TikTokHighlightStoryMediaFailure("highlight_media_provider_invalid_response") from None
 
     # Only durable, non-expiring shape enters the database. Candidates are not
     # put into a job checkpoint, error message, or repository call.

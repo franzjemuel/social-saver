@@ -59,6 +59,10 @@
 - [ ] Review the Highlight provider invocation-ledger foundation and connect it
   only to an approved asynchronous provider run/receipt flow; keep live Actor
   registration disabled until licensing and staged-spend approval.
+- [ ] Review the synthetic-only Highlight descriptor-to-archive bridge. Before
+  enabling it, approve provider licensing, a server-owned invocation policy,
+  migration 025/026 rollout, and one bounded paid one-Story staging test; do
+  not place descriptors, provider tokens, or raw responses in jobs or storage.
 - [ ] Review the synthetic-only Highlight Story media archive foundation. Keep
   live descriptor resolution disabled pending provider licensing, reviewed
   durable invocation accounting, and a one-Story staging approval. The

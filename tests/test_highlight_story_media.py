@@ -8,12 +8,18 @@ from fastapi import HTTPException
 import apps.api.main as api
 from apps.worker.main import complete_highlight_story_media_failure
 from apps.worker.processors.highlight_story_media import (
+    HighlightProviderExecutionPolicy,
     TikTokHighlightStoryMediaFailure,
     process_archive_highlight_story_media,
 )
 from core.highlight_media import HighlightStoryMediaService
 from core.media_download import DownloadedAsset
 from providers.base import HighlightStoryMediaDescriptor, SourceUnavailable
+from providers.tiktok.apify_highlight_story_media_provider import (
+    ApifyHighlightStoryMediaProvider,
+    PROVIDER_NAMESPACE,
+)
+from providers.tiktok.apify_highlights import HighlightStory, HighlightStoryPage
 
 
 PROFILE = UUID("11111111-1111-1111-1111-111111111111")
@@ -63,6 +69,24 @@ class Service:
         return False
 
 
+class LedgerRepo(Repo):
+    def __init__(self):
+        super().__init__()
+        self.ledger = []
+
+    async def initialize_owned_highlight_provider_budget(self, *args):
+        self.ledger.append(("budget", args)); return {"id": "budget"}
+
+    async def reserve_owned_highlight_provider_invocation(self, *args, **kwargs):
+        self.ledger.append(("reserve", args, kwargs)); return {"id": "invocation"}
+
+    async def claim_owned_highlight_provider_invocation(self, *args):
+        self.ledger.append(("claim", args)); return {"id": "invocation", "status": "started"}
+
+    async def finish_owned_highlight_provider_invocation(self, *args, **kwargs):
+        self.ledger.append(("finish", args, kwargs)); return {"id": "invocation", "status": kwargs["status"]}
+
+
 @pytest.mark.asyncio
 async def test_synthetic_story_media_pipeline_keeps_descriptors_in_memory(tmp_path):
     repo = Repo()
@@ -73,6 +97,131 @@ async def test_synthetic_story_media_pipeline_keeps_descriptors_in_memory(tmp_pa
     assert result == {"assets_discovered": 1, "assets_seeded": 1, "attached": 1, "uploaded": 1, "reused": 0, "failures": 0, "pending_after": 0, "outcome": "complete"}
     assert repo.seeded[0].candidates == ("https://ephemeral.invalid/video",)
     assert not repo.failures
+
+
+@pytest.mark.asyncio
+async def test_budgeted_descriptor_resolution_claims_once_then_persists_private_asset():
+    repo = LedgerRepo()
+    policy = HighlightProviderExecutionPolicy("synthetic", 10, 10)
+    result = await process_archive_highlight_story_media(
+        {"id": "job", "user_id": "tenant", "input": {"profile_id": str(PROFILE), "membership_id": str(MEMBERSHIP)}},
+        repo, Provider(), Downloader(), Service(), execution_enabled=True,
+        provider_execution_policy=policy,
+    )
+    assert result["attached"] == 1 and result["outcome"] == "complete"
+    assert [entry[0] for entry in repo.ledger] == ["budget", "reserve", "claim", "finish"]
+    assert repo.ledger[-1][-1]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_budgeted_ambiguous_provider_failure_is_terminal_and_reservation_is_not_reused():
+    class AmbiguousProvider:
+        async def resolve_story_media(self, **_):
+            raise SourceUnavailable("private provider response")
+    repo = LedgerRepo()
+    with pytest.raises(TikTokHighlightStoryMediaFailure) as error:
+        await process_archive_highlight_story_media(
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": str(PROFILE), "membership_id": str(MEMBERSHIP)}},
+            repo, AmbiguousProvider(), execution_enabled=True,
+            provider_execution_policy=HighlightProviderExecutionPolicy("synthetic", 10, 10),
+        )
+    assert error.value.code == "highlight_media_provider_indeterminate"
+    assert repo.ledger[-1][-1] == {"status": "indeterminate", "error_code": "provider_ambiguous_failure"}
+
+
+@pytest.mark.asyncio
+async def test_budgeted_known_provider_failure_is_terminal_without_descriptor_or_asset_mutation():
+    from providers.base import MediaNotFound
+    class MissingProvider:
+        async def resolve_story_media(self, **_):
+            raise MediaNotFound("private source")
+    repo = LedgerRepo()
+    with pytest.raises(TikTokHighlightStoryMediaFailure) as error:
+        await process_archive_highlight_story_media(
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": str(PROFILE), "membership_id": str(MEMBERSHIP)}},
+            repo, MissingProvider(), execution_enabled=True,
+            provider_execution_policy=HighlightProviderExecutionPolicy("synthetic", 10, 10),
+        )
+    assert error.value.code == "highlight_media_provider_failed"
+    assert repo.seeded == []
+    assert repo.ledger[-1][-1] == {"status": "failed_known", "error_code": "provider_known_failure"}
+
+
+@pytest.mark.asyncio
+async def test_dispatched_provider_with_ambiguous_receipt_write_is_terminal_before_media_persistence():
+    class ReceiptRepo(LedgerRepo):
+        async def finish_owned_highlight_provider_invocation(self, *args, **kwargs):
+            self.ledger.append(("finish", args, kwargs)); return None
+    repo = ReceiptRepo()
+    with pytest.raises(TikTokHighlightStoryMediaFailure) as error:
+        await process_archive_highlight_story_media(
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": str(PROFILE), "membership_id": str(MEMBERSHIP)}},
+            repo, Provider(), Downloader(), Service(), execution_enabled=True,
+            provider_execution_policy=HighlightProviderExecutionPolicy("synthetic", 10, 10),
+        )
+    assert error.value.code == "highlight_media_provider_receipt_unavailable"
+    assert repo.seeded == []
+
+
+@pytest.mark.asyncio
+async def test_synthetic_apify_story_to_private_object_pipeline_keeps_descriptor_out_of_persistence(tmp_path):
+    """One Story's descriptor crosses only the in-memory worker boundary."""
+    class POCClient:
+        async def stories(self, collection_id, *, posts_per_page, expected_item_count, live_authorized):
+            assert collection_id == "collection" and posts_per_page == 30
+            assert expected_item_count is None and live_authorized is False
+            return HighlightStoryPage((HighlightStory(
+                "story", "collection", 0, "video", None, 2.0,
+                ("https://ephemeral.invalid/video",),
+            ),), 1, 0, posts_per_page, False)
+
+    object_id = UUID("55555555-5555-5555-5555-555555555555")
+    class ArchiveRepo(LedgerRepo):
+        async def get_owned_highlight_story_media_target(self, *_):
+            return {
+                "username": "owner", "provider_namespace": PROVIDER_NAMESPACE,
+                "provider_collection_id": "collection", "provider_item_id": "story", "media_type": "video",
+            }
+        async def get_stored_object_by_sha(self, _): return None
+        async def create_stored_object(self, sha, key, size, content_type):
+            assert sha == "a" * 64 and size == 5 and content_type == "video/mp4"
+            assert key.startswith("archive/aa/")
+            return object_id
+        async def attach_owned_highlight_story_media_object(self, user_id, profile_id, asset_id, saved_object_id):
+            assert (user_id, profile_id, asset_id, saved_object_id) == ("tenant", str(PROFILE), ASSET, object_id)
+            self.attached.append(saved_object_id)
+            return asset_id
+
+    class Storage:
+        async def put_file(self, path, key, content_type):
+            assert path.read_bytes() == b"media" and key.startswith("archive/")
+            assert content_type == "video/mp4"
+
+    errors = []
+    class DiagnosticService(HighlightStoryMediaService):
+        async def persist(self, **kwargs):
+            try:
+                return await super().persist(**kwargs)
+            except Exception as exc:
+                errors.append(exc)
+                raise
+
+    repo = ArchiveRepo()
+    result = await process_archive_highlight_story_media(
+        {"id": "job", "user_id": "tenant", "input": {"profile_id": str(PROFILE), "membership_id": str(MEMBERSHIP)}},
+        repo,
+        ApifyHighlightStoryMediaProvider(POCClient()),
+        Downloader(),
+        DiagnosticService(repo, Storage()),
+        execution_enabled=True,
+        provider_execution_policy=HighlightProviderExecutionPolicy(PROVIDER_NAMESPACE, 10, 10),
+    )
+    assert not errors
+    assert result["attached"] == result["uploaded"] == 1, result
+    assert repo.attached == [object_id]
+    assert repo.seeded[0].candidates == ("https://ephemeral.invalid/video",)
+    # Repository calls receive only normalized asset shape, never candidates.
+    assert "ephemeral.invalid" not in repr(repo.ledger)
 
 
 @pytest.mark.asyncio
@@ -127,6 +276,20 @@ async def test_unregistered_highlight_provider_is_terminal_not_retryable():
             Repo(), execution_enabled=True,
         )
     assert error.value.code == "highlight_media_provider_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_paid_capable_provider_requires_explicit_execution_policy_before_any_resolution():
+    class PaidCapableProvider:
+        requires_execution_policy = True
+        async def resolve_story_media(self, **_):
+            raise AssertionError("provider must not be called without a ledger policy")
+    with pytest.raises(TikTokHighlightStoryMediaFailure) as error:
+        await process_archive_highlight_story_media(
+            {"id": "job", "user_id": "tenant", "input": {"profile_id": str(PROFILE), "membership_id": str(MEMBERSHIP)}},
+            Repo(), PaidCapableProvider(), execution_enabled=True,
+        )
+    assert error.value.code == "highlight_media_provider_policy_required"
 
 
 @pytest.mark.asyncio
