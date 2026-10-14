@@ -24,12 +24,13 @@ class _Writer:
     def __init__(self, peer):
         self.peer = peer
         self.closed = False
+        self.writes = []
 
     def get_extra_info(self, name):
         return self.peer if name == "peername" else None
 
-    def write(self, _):
-        pass
+    def write(self, value):
+        self.writes.append(value)
 
     async def drain(self):
         pass
@@ -55,6 +56,7 @@ def _http(payload):
 @pytest.mark.asyncio
 async def test_highlight_mp4_downloader_streams_validated_bytes_and_hashes(tmp_path):
     video = _mp4_bytes()
+    writer = _Writer(("8.8.8.8", 443))
 
     async def resolve(_, __):
         return ("8.8.8.8",)
@@ -63,7 +65,7 @@ async def test_highlight_mp4_downloader_streams_validated_bytes_and_hashes(tmp_p
         assert kwargs["server_hostname"] == "cdn.example.invalid"
         assert isinstance(kwargs["ssl"], ssl.SSLContext)
         assert kwargs["ssl"].check_hostname
-        return _reader(_http(video)), _Writer(("8.8.8.8", 443))
+        return _reader(_http(video)), writer
 
     result = await TikTokHighlightMp4Downloader(resolve=resolve, open_connection=connect).download_asset(
         ("https://cdn.example.invalid/story",), tmp_path / "story.asset",
@@ -74,6 +76,7 @@ async def test_highlight_mp4_downloader_streams_validated_bytes_and_hashes(tmp_p
     assert result.size_bytes == len(video)
     assert result.sha256 == hashlib.sha256(video).hexdigest()
     assert result.content_type == "video/mp4"
+    assert b"Accept: video/mp4,video/*;q=0.9,*/*;q=0.1" in writer.writes[0]
 
 
 @pytest.mark.asyncio

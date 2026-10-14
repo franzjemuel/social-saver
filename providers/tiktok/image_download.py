@@ -106,7 +106,13 @@ class TikTokImageDownloader:
                 reason,
             )
 
-    async def _fetch(self, raw_url: str, destination: Path) -> None:
+    async def _fetch(
+        self,
+        raw_url: str,
+        destination: Path,
+        *,
+        accept_header: str = "image/jpeg,image/png,image/webp",
+    ) -> None:
         url = raw_url
         for _ in range(self.max_redirects + 1):
             parsed = self._validate_url(url)
@@ -119,7 +125,7 @@ class TikTokImageDownloader:
                 host_header = parsed.hostname if parsed.port in (None, 443) else f"{parsed.hostname}:{parsed.port}"
                 writer.write(
                     f"GET {target} HTTP/1.1\r\nHost: {host_header}\r\n"
-                    "Accept: image/jpeg,image/png,image/webp\r\nConnection: close\r\n\r\n".encode("ascii"),
+                    f"Accept: {accept_header}\r\nConnection: close\r\n\r\n".encode("ascii"),
                 )
                 async with asyncio.timeout(self.timeout_seconds):
                     await writer.drain()

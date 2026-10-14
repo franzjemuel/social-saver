@@ -64,7 +64,11 @@ class TikTokHighlightMp4Downloader:
             temporary = destination.with_name(f"{destination.name}.candidate")
             try:
                 async with asyncio.timeout(self.candidate_deadline_seconds):
-                    await self._transport._fetch(candidate, temporary)
+                    await self._transport._fetch(
+                        candidate,
+                        temporary,
+                        accept_header="video/mp4,video/*;q=0.9,*/*;q=0.1",
+                    )
                     return await asyncio.to_thread(
                         self._validate_and_move, temporary, destination, self.max_bytes,
                     )
