@@ -169,6 +169,33 @@ class ProfileHighlightsDiscoveryProvider(ABC):
     async def discover_highlights(self, username: str) -> HighlightDiscoveryResult: ...
 
 
+@dataclass(frozen=True)
+class HighlightStoryMediaDescriptor:
+    """Ephemeral worker-only acquisition detail for one Story asset.
+
+    ``candidates`` are intentionally not serializable archive metadata. A
+    provider may return them only to the worker during an approved acquisition
+    attempt; callers must never place them in a queue payload or database row.
+    """
+
+    position: int
+    asset_type: str
+    candidates: tuple[str, ...]
+    duration_seconds: float | None = None
+    width: int | None = None
+    height: int | None = None
+
+
+class HighlightStoryMediaProvider(ABC):
+    """Resolve transient descriptors for one already-owned Highlight Story."""
+
+    @abstractmethod
+    async def resolve_story_media(
+        self, *, username: str, provider_namespace: str,
+        provider_collection_id: str, provider_item_id: str,
+    ) -> tuple[HighlightStoryMediaDescriptor, ...]: ...
+
+
 class ProfileArchiveProvider(ABC):
     """Discovers and normalizes profile metadata without downloading media."""
 

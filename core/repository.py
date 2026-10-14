@@ -890,6 +890,177 @@ class Repository:
             return None
         return [] if rows[0]["id"] is None else rows
 
+    async def upsert_owned_highlight_story_media_assets(self, user_id, profile_id, membership_id, assets):
+        """Record safe asset shape, never acquisition descriptors, for one Story.
+
+        An attached object is immutable archival evidence. A later provider
+        response can refresh metadata only while that position remains
+        unattached, preventing a reordered upstream carousel from being
+        silently reinterpreted.
+        """
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                owned = await con.fetchval(
+                    """select membership.id
+                       from archived_highlight_story_memberships membership
+                       join archived_highlight_collections collection
+                         on collection.id=membership.archived_highlight_collection_id
+                       join archived_profiles profile on profile.id=collection.archived_profile_id
+                       where membership.id=$1::uuid and profile.id=$2::uuid and profile.user_id=$3
+                       for update""",
+                    membership_id, profile_id, user_id,
+                )
+                if owned is None:
+                    return None
+                inserted = refreshed = 0
+                for asset in assets:
+                    row = await con.fetchrow(
+                        """insert into archived_highlight_story_media_assets
+                               (archived_highlight_story_membership_id,position,asset_type,
+                                duration_seconds,width,height,last_observed_at)
+                           values($1::uuid,$2,$3,$4,$5,$6,now())
+                           on conflict(archived_highlight_story_membership_id,position)
+                           do update set asset_type=excluded.asset_type,
+                              duration_seconds=coalesce(excluded.duration_seconds,
+                                                        archived_highlight_story_media_assets.duration_seconds),
+                              width=coalesce(excluded.width, archived_highlight_story_media_assets.width),
+                              height=coalesce(excluded.height, archived_highlight_story_media_assets.height),
+                              last_observed_at=now()
+                           where archived_highlight_story_media_assets.stored_object_id is null
+                           returning id,(xmax = 0) as created""",
+                        membership_id, asset.position, asset.asset_type,
+                        asset.duration_seconds, asset.width, asset.height,
+                    )
+                    if row is None:
+                        continue
+                    if row["created"]:
+                        inserted += 1
+                    else:
+                        refreshed += 1
+                return {"inserted": inserted, "refreshed": refreshed}
+
+    async def get_owned_highlight_story_media_target(self, user_id, profile_id, membership_id):
+        """Internal worker target; ownership is proven in the lookup itself."""
+        return await self.pool.fetchrow(
+            """select profile.username, collection.provider_namespace,
+                      collection.provider_collection_id, membership.provider_item_id,
+                      membership.media_type
+               from archived_highlight_story_memberships membership
+               join archived_highlight_collections collection
+                 on collection.id=membership.archived_highlight_collection_id
+               join archived_profiles profile on profile.id=collection.archived_profile_id
+               where membership.id=$1::uuid and profile.id=$2::uuid and profile.user_id=$3
+                 and profile.platform='tiktok'""",
+            membership_id, profile_id, user_id,
+        )
+
+    async def list_owned_highlight_story_media_assets(self, user_id, profile_id, membership_id):
+        """Internal worker-only pending assets. No descriptor is stored here."""
+        return await self.pool.fetch(
+            """select asset.id,asset.position,asset.asset_type
+               from archived_highlight_story_media_assets asset
+               join archived_highlight_story_memberships membership
+                 on membership.id=asset.archived_highlight_story_membership_id
+               join archived_highlight_collections collection
+                 on collection.id=membership.archived_highlight_collection_id
+               join archived_profiles profile on profile.id=collection.archived_profile_id
+               where membership.id=$1::uuid and profile.id=$2::uuid and profile.user_id=$3
+                 and asset.stored_object_id is null
+               order by asset.position,asset.id""",
+            membership_id, profile_id, user_id,
+        )
+
+    async def attach_owned_highlight_story_media_object(self, user_id, profile_id, asset_id, object_id):
+        """Attach exactly one owned Highlight asset; repeated retries are safe."""
+        return await self.pool.fetchval(
+            """update archived_highlight_story_media_assets asset
+               set stored_object_id=$4::uuid,last_archived_at=now(),last_failure_code=null,
+                   archive_attempt_count=archive_attempt_count+1,last_archive_attempt_at=now()
+               from archived_highlight_story_memberships membership
+               join archived_highlight_collections collection
+                 on collection.id=membership.archived_highlight_collection_id
+               join archived_profiles profile on profile.id=collection.archived_profile_id
+               where asset.id=$3::uuid and asset.archived_highlight_story_membership_id=membership.id
+                 and profile.id=$1::uuid and profile.user_id=$2
+                 and (asset.stored_object_id is null or asset.stored_object_id=$4::uuid)
+               returning asset.id""",
+            profile_id, user_id, asset_id, object_id,
+        )
+
+    async def record_owned_highlight_story_media_failure(self, user_id, profile_id, asset_id, code):
+        """Keep only a normalized failure stage for explicit later retries."""
+        return await self.pool.fetchval(
+            """update archived_highlight_story_media_assets asset
+               set archive_attempt_count=archive_attempt_count+1,last_archive_attempt_at=now(),
+                   last_failure_code=$4
+               from archived_highlight_story_memberships membership
+               join archived_highlight_collections collection
+                 on collection.id=membership.archived_highlight_collection_id
+               join archived_profiles profile on profile.id=collection.archived_profile_id
+               where asset.id=$3::uuid and asset.archived_highlight_story_membership_id=membership.id
+                 and profile.id=$1::uuid and profile.user_id=$2 and asset.stored_object_id is null
+               returning asset.id""",
+            profile_id, user_id, asset_id, code,
+        )
+
+    async def get_owned_highlight_story_media_playback(self, user_id, profile_id, membership_id, position):
+        """Return a private storage key only after tenant ownership is joined."""
+        return await self.pool.fetchrow(
+            """select asset.asset_type,object.storage_key,object.content_type
+               from archived_highlight_story_media_assets asset
+               join archived_highlight_story_memberships membership
+                 on membership.id=asset.archived_highlight_story_membership_id
+               join archived_highlight_collections collection
+                 on collection.id=membership.archived_highlight_collection_id
+               join archived_profiles profile on profile.id=collection.archived_profile_id
+               left join stored_objects object on object.id=asset.stored_object_id
+                  and object.deleted_at is null
+               where membership.id=$1::uuid and profile.id=$2::uuid and profile.user_id=$3
+                 and asset.position=$4::integer""",
+            membership_id, profile_id, user_id, position,
+        )
+
+    async def create_owned_highlight_story_media_job(self, user_id, chat_id, profile_id, membership_id, *, queue_name):
+        """Atomically coalesce one explicit Story media request; no descriptor enters PGMQ."""
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                await con.execute(
+                    "select pg_advisory_xact_lock(hashtextextended($1,0))",
+                    f"highlight-media:{user_id}:{profile_id}:{membership_id}",
+                )
+                owned = await con.fetchval(
+                    """select membership.id from archived_highlight_story_memberships membership
+                       join archived_highlight_collections collection
+                         on collection.id=membership.archived_highlight_collection_id
+                       join archived_profiles profile on profile.id=collection.archived_profile_id
+                       where membership.id=$1::uuid and profile.id=$2::uuid and profile.user_id=$3""",
+                    membership_id, profile_id, user_id,
+                )
+                if owned is None:
+                    return None
+                active = await con.fetchrow(
+                    """select id from jobs where user_id=$1 and job_type='archive_highlight_story_media'
+                       and status in ('queued','running')
+                       and input->>'profile_id'=$2::uuid::text
+                       and input->>'membership_id'=$3::uuid::text
+                       order by created_at limit 1 for update""",
+                    user_id, profile_id, membership_id,
+                )
+                if active is not None:
+                    return ProfileMediaJob(active["id"], False)
+                job = await con.fetchrow(
+                    """insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel)
+                       values($1,$2,'archive_highlight_story_media',
+                              jsonb_build_object('profile_id',$3::uuid,'membership_id',$4::uuid),'mini_app')
+                       returning id""",
+                    user_id, chat_id, profile_id, membership_id,
+                )
+                await con.fetchval(
+                    "select * from pgmq.send($1::text,jsonb_build_object('version',1,'job_id',$2::text),0)",
+                    queue_name, str(job["id"]),
+                )
+                return ProfileMediaJob(job["id"], True)
+
     async def create_owned_profile_full_sync_job(self, user_id, chat_id, profile_id, *, queue_name):
         """Atomically queue one tenant-owned full-history metadata sync."""
         async with self.pool.acquire() as con:

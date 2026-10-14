@@ -19,6 +19,9 @@ from apps.worker.processors.profile_import import process_import_profile, TikTok
 from apps.worker.processors.profile_sync import process_sync_profile, TikTokProfileSyncFailure
 from apps.worker.processors.profile_full_sync import process_full_sync_profile, TikTokProfileFullSyncFailure
 from apps.worker.processors.profile_highlight_sync import process_sync_profile_highlights, TikTokProfileHighlightSyncFailure
+from apps.worker.processors.highlight_story_media import (
+    process_archive_highlight_story_media, TikTokHighlightStoryMediaFailure,
+)
 from apps.worker.processors.profile_photo_delivery import process_deliver_profile_photos
 from providers.tiktok.validation import TikTokProfileValidationFailure
 from core.observability import init_observability, capture_job_exception
@@ -64,6 +67,12 @@ async def complete_terminal_failure(repo, queue, bot, msg, job_id, job, exc):
             # A blocked/deleted Telegram DM must not strand an already-terminal
             # queue message or retry its original provider/storage work.
             pass
+    await queue.archive(msg["msg_id"])
+
+
+async def complete_highlight_story_media_failure(repo, queue, msg, job_id, exc):
+    """Fail disabled/manual-only Highlight media work without bot side effects."""
+    await repo.fail_job(job_id, exc.code.upper(), exc.code)
     await queue.archive(msg["msg_id"])
 
 async def main():
@@ -170,6 +179,10 @@ async def main():
                     async with provider_concurrency.for_platform("tiktok"):
                         result = await process_sync_profile_highlights(job, repo)
                     success_message = None
+                elif job["job_type"] == "archive_highlight_story_media":
+                    async with provider_concurrency.for_platform("tiktok"):
+                        result = await process_archive_highlight_story_media(job, repo)
+                    success_message = None
                 else:
                     raise ValueError(f"Unknown job type: {job['job_type']}")
 
@@ -198,6 +211,11 @@ async def main():
                 # not emit a bot notice that could itself strand queue cleanup.
                 await repo.fail_job(job_id, exc.code.upper(), exc.code)
                 await queue.archive(msg["msg_id"])
+            except TikTokHighlightStoryMediaFailure as exc:
+                # Feature-disabled and malformed/manual-only Highlight media
+                # jobs are terminal status-only outcomes, never Instagram
+                # retries or unrelated Telegram notifications.
+                await complete_highlight_story_media_failure(repo, queue, msg, job_id, exc)
             except Exception as exc:
                 capture_job_exception(exc,job)
                 if msg["read_ct"] >= settings.queue_max_attempts:

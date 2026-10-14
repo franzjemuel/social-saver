@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     # Deliberately off until a separately approved, licensed provider is wired
     # into the worker.  The API checks this before creating any queue work.
     tiktok_highlights_sync_enabled: bool = False
+    # Separate from metadata discovery. It remains off until a licensed live
+    # descriptor provider and durable invocation ledger are approved.
+    tiktok_highlights_media_enabled: bool = False
     admin_telegram_user_ids: str = ""
     upstash_redis_rest_url: str | None = None
     upstash_redis_rest_token: str | None = None

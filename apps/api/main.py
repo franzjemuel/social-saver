@@ -557,6 +557,10 @@ class ProfileArchivePlaybackResponse(BaseModel):
     expires_in: int | None = None
 
 
+class HighlightStoryMediaPlaybackResponse(ProfileArchivePlaybackResponse):
+    position: int
+
+
 class ProfileArchiveDownloadResponse(BaseModel):
     available: bool
     download_url: str | None = None
@@ -820,6 +824,60 @@ async def profile_archive_playback(profile_id: str, post_id: str, identity=Depen
     return ProfileArchivePlaybackResponse(
         available=True, media_type=row["media_type"], playback_url=url,
         expires_in=settings.archive_presign_seconds,
+    )
+
+
+@app.post(
+    "/v1/profile-archives/{profile_id}/highlight-memberships/{membership_id}/archive-media",
+    response_model=ProfileArchiveMediaJobResponse, status_code=status.HTTP_202_ACCEPTED,
+)
+async def archive_highlight_story_media(profile_id: str, membership_id: str, identity=Depends(current_identity)):
+    """Queue no work unless a separately approved live provider is enabled."""
+    if not settings.tiktok_highlights_media_enabled:
+        raise HTTPException(status_code=404, detail="highlight_media_not_found")
+    if _repo is None or _queue is None:
+        raise HTTPException(status_code=503, detail="archive_media_unavailable")
+    try:
+        profile, membership = UUID(profile_id), UUID(membership_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="highlight_media_not_found") from None
+    job = await _repo.create_owned_highlight_story_media_job(
+        identity["app_user_id"], identity["telegram_user_id"], profile, membership,
+        queue_name=_queue.queue_name,
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="highlight_media_not_found")
+    return ProfileArchiveMediaJobResponse(job_id=str(getattr(job, "id", job)))
+
+
+@app.post(
+    "/v1/profile-archives/{profile_id}/highlight-memberships/{membership_id}/assets/{position}/playback",
+    response_model=HighlightStoryMediaPlaybackResponse,
+)
+async def highlight_story_media_playback(
+    profile_id: str, membership_id: str, position: int = PathParam(ge=0, le=9999),
+    identity=Depends(current_identity),
+):
+    if _repo is None or _r2 is None:
+        raise HTTPException(status_code=503, detail="archive_playback_unavailable")
+    try:
+        profile, membership = UUID(profile_id), UUID(membership_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="highlight_media_not_found") from None
+    row = await _repo.get_owned_highlight_story_media_playback(
+        identity["app_user_id"], profile, membership, position,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="highlight_media_not_found")
+    if row["storage_key"] is None:
+        return HighlightStoryMediaPlaybackResponse(available=False, media_type=row["asset_type"], position=position)
+    try:
+        url = await _r2.presigned_get(row["storage_key"], settings.archive_presign_seconds)
+    except Exception:
+        raise HTTPException(status_code=503, detail="archive_playback_unavailable") from None
+    return HighlightStoryMediaPlaybackResponse(
+        available=True, media_type=row["asset_type"], position=position,
+        playback_url=url, expires_in=settings.archive_presign_seconds,
     )
 
 
