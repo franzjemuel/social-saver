@@ -56,12 +56,13 @@
 - [x] Add profile-import confirmation and bounded worker-owned TikTok metadata import after validation; do not imply full media persistence.
 - [x] Add manual worker-owned TikTok profile metadata sync with full-ID presence reconciliation and bounded enrichment; frontend Sync control remains pending.
 - [ ] Review the synthetic-only, tenant-scoped TikTok Profile Highlights manual-sync candidate. A separately approved live-provider phase must add licensing, spend budgets, durable per-Actor invocation receipts, and safe metadata read projections before enabling the feature gate.
-- [ ] Review the Highlight provider invocation-ledger foundation and connect it
-  only to an approved asynchronous provider run/receipt flow; keep live Actor
-  registration disabled until licensing and staged-spend approval.
+- [ ] Review the staging-only one-Story Highlight canary. It now has migration
+  027 single-use authorization, asynchronous Actor run receipts, and a $0.65
+  aggregate reservation cap; keep every live gate disabled until commercial
+  licensing, media authorization, staged rollout, and explicit spend approval.
 - [ ] Review the synthetic-only Highlight descriptor-to-archive bridge. Before
   enabling it, approve provider licensing, a server-owned invocation policy,
-  migration 025/026 rollout, and one bounded paid one-Story staging test; do
+  migration 025/026/027 rollout, and one bounded paid one-Story staging test; do
   not place descriptors, provider tokens, or raw responses in jobs or storage.
 - [ ] Review the synthetic-only Highlight Story media archive foundation. Keep
   live descriptor resolution disabled pending provider licensing, reviewed

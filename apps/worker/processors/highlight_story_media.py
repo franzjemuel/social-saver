@@ -6,6 +6,11 @@ from tempfile import TemporaryDirectory
 
 from core.highlight_media import HighlightStoryMediaService
 from core.config import settings
+from apps.worker.processors.highlight_canary_execution import (
+    HighlightCanaryExecutionFailure,
+    HighlightCanaryExecutionPolicy,
+    HighlightCanaryExecutor,
+)
 from providers.base import (
     HighlightStoryMediaDescriptor,
     TerminalProviderError,
@@ -111,7 +116,30 @@ async def process_archive_highlight_story_media(
         # An adapter that can call a paid source cannot be accidentally used
         # through the otherwise useful synthetic processor seam.
         raise TikTokHighlightStoryMediaFailure("highlight_media_provider_policy_required")
-    if provider_execution_policy is not None:
+    is_live_canary = bool(getattr(provider, "requires_live_execution_broker", False))
+    canary_authorization = None
+    executor = None
+    if is_live_canary:
+        if not isinstance(provider_execution_policy, HighlightCanaryExecutionPolicy):
+            raise TikTokHighlightStoryMediaFailure("highlight_media_provider_policy_required")
+        canary_authorization = await repo.claim_owned_highlight_canary_authorization(
+            job["user_id"], job["id"], profile_id, membership_id, target["provider_namespace"],
+        )
+        if canary_authorization is None:
+            raise TikTokHighlightStoryMediaFailure("highlight_media_canary_not_authorized")
+        if canary_authorization["budget_micro_usd"] != provider_execution_policy.total_budget_micro_usd:
+            raise TikTokHighlightStoryMediaFailure("highlight_media_canary_budget_invalid")
+        budget = await repo.initialize_owned_highlight_provider_budget(
+            job["user_id"], job["id"], profile_id, canary_authorization["budget_micro_usd"],
+        )
+        if budget is None:
+            await repo.complete_owned_highlight_canary_authorization(
+                job["user_id"], job["id"], status="indeterminate",
+            )
+            raise TikTokHighlightStoryMediaFailure("highlight_media_provider_budget_unavailable")
+        executor = HighlightCanaryExecutor(repo, job, profile_id, provider_execution_policy)
+        invocation = None
+    elif provider_execution_policy is not None:
         if provider_execution_policy.provider_namespace != target["provider_namespace"]:
             raise TikTokHighlightStoryMediaFailure("highlight_media_provider_mismatch")
         budget = await repo.initialize_owned_highlight_provider_budget(
@@ -134,25 +162,57 @@ async def process_archive_highlight_story_media(
         invocation = None
 
     try:
-        raw_descriptors = await provider.resolve_story_media(
-            username=target["username"], provider_namespace=target["provider_namespace"],
-            provider_collection_id=target["provider_collection_id"], provider_item_id=target["provider_item_id"],
-        )
+        kwargs = {
+            "username": target["username"],
+            "provider_namespace": target["provider_namespace"],
+            "provider_collection_id": target["provider_collection_id"],
+            "provider_item_id": target["provider_item_id"],
+        }
+        if executor is not None:
+            raw_descriptors = await provider.resolve_story_media(**kwargs, execution=executor)
+        else:
+            raw_descriptors = await provider.resolve_story_media(**kwargs)
+    except HighlightCanaryExecutionFailure as exc:
+        if canary_authorization is not None:
+            await repo.complete_owned_highlight_canary_authorization(
+                job["user_id"], job["id"], status=exc.authorization_status,
+            )
+        raise TikTokHighlightStoryMediaFailure(exc.code) from None
     except TerminalProviderError:
         if invocation is not None:
             await _finish_provider_invocation(repo, job, invocation, status="failed_known", error_code="provider_known_failure")
+        if canary_authorization is not None:
+            await repo.complete_owned_highlight_canary_authorization(
+                job["user_id"], job["id"], status="failed_known",
+            )
         raise TikTokHighlightStoryMediaFailure("highlight_media_provider_failed") from None
     except SourceUnavailable:
+        if canary_authorization is not None:
+            # A live canary has already consumed its bounded authorization by
+            # this point; provider-shaped validation errors are known failures,
+            # not ordinary queue-retry candidates.
+            await repo.complete_owned_highlight_canary_authorization(
+                job["user_id"], job["id"], status="failed_known",
+            )
+            raise TikTokHighlightStoryMediaFailure("highlight_media_provider_failed") from None
         if invocation is None:
             # Preserve the existing synthetic/manual retry behavior. Only an
             # explicitly budgeted external invocation is made terminal to
             # avoid paying twice after an ambiguous provider outcome.
             raise
         await _finish_provider_invocation(repo, job, invocation, status="indeterminate", error_code="provider_ambiguous_failure")
+        if canary_authorization is not None:
+            await repo.complete_owned_highlight_canary_authorization(
+                job["user_id"], job["id"], status="indeterminate",
+            )
         raise TikTokHighlightStoryMediaFailure("highlight_media_provider_indeterminate") from None
     except Exception:
         if invocation is not None:
             await _finish_provider_invocation(repo, job, invocation, status="indeterminate", error_code="provider_ambiguous_failure")
+        if canary_authorization is not None:
+            await repo.complete_owned_highlight_canary_authorization(
+                job["user_id"], job["id"], status="indeterminate",
+            )
         raise TikTokHighlightStoryMediaFailure("highlight_media_provider_indeterminate") from None
 
     if invocation is not None:
@@ -160,6 +220,10 @@ async def process_archive_highlight_story_media(
     try:
         descriptors = _validate_descriptors(raw_descriptors)
     except SourceUnavailable:
+        if canary_authorization is not None:
+            await repo.complete_owned_highlight_canary_authorization(
+                job["user_id"], job["id"], status="failed_known",
+            )
         raise TikTokHighlightStoryMediaFailure("highlight_media_provider_invalid_response") from None
 
     # Only durable, non-expiring shape enters the database. Candidates are not
@@ -209,7 +273,7 @@ async def process_archive_highlight_story_media(
                     job["id"], min(99, int(index * 100 / max(1, len(pending)))),
                 )
     pending_after = max(0, len(pending) - attached)
-    return {
+    result = {
         "assets_discovered": len(descriptors), "assets_seeded": seeded["inserted"],
         "attached": attached, "uploaded": uploaded, "reused": reused,
         "failures": failures, "pending_after": pending_after,
@@ -217,3 +281,13 @@ async def process_archive_highlight_story_media(
         # claim that every Story asset is privately archived.
         "outcome": "complete" if failures == 0 and pending_after == 0 else "partial",
     }
+    if canary_authorization is not None:
+        # The authorization is single-use even for a partial media outcome:
+        # the paid Actor run has already occurred and must never be repeated
+        # automatically merely to retry a temporary descriptor download.
+        completed = await repo.complete_owned_highlight_canary_authorization(
+            job["user_id"], job["id"], status="consumed",
+        )
+        if completed is None:
+            raise TikTokHighlightStoryMediaFailure("highlight_media_canary_receipt_unavailable")
+    return result

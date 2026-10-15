@@ -688,6 +688,96 @@ async def test_highlight_story_media_job_can_use_same_tenant_owned_invocation_le
     assert done['status'] == 'succeeded'
 
 
+async def test_highlight_canary_authorization_is_tenant_scoped_single_use_and_caps_two_runs(database):
+    """Migration 027 binds one paid-video canary to one owner/job/receipt path."""
+    repo = Repository(database.pool)
+    queue = JobQueue(database.pool)
+    owner = await database.pool.fetchval('insert into app_users default values returning id')
+    other = await database.pool.fetchval('insert into app_users default values returning id')
+    profile = await database.pool.fetchval(
+        """insert into archived_profiles(user_id,platform,platform_account_id,username)
+           values($1,'tiktok','canary-account','owner') returning id""", owner,
+    )
+    collection = await database.pool.fetchval(
+        """insert into archived_highlight_collections
+               (archived_profile_id,provider_namespace,provider_collection_id)
+           values($1,'apify:tiktok-highlights','canary-collection') returning id""", profile,
+    )
+    membership = await database.pool.fetchval(
+        """insert into archived_highlight_story_memberships
+               (archived_highlight_collection_id,provider_namespace,provider_item_id,provider_position,media_type)
+           values($1,'apify:tiktok-highlights','canary-story',0,'video') returning id""", collection,
+    )
+    assert await repo.has_owned_highlight_canary_candidate(
+        owner, profile, 'apify:tiktok-highlights',
+    ) is True
+    assert await repo.has_owned_highlight_canary_candidate(
+        other, profile, 'apify:tiktok-highlights',
+    ) is False
+    first = await repo.create_owned_highlight_story_media_canary_job(
+        owner, 1, profile, membership,
+        provider_namespace='apify:tiktok-highlights', authorization_reference='approved-test-canary',
+        budget_micro_usd=650_000, queue_name=queue.queue_name,
+    )
+    assert first and first.created
+    assert await repo.create_owned_highlight_story_media_canary_job(
+        other, 2, profile, membership,
+        provider_namespace='apify:tiktok-highlights', authorization_reference='other-attempt',
+        budget_micro_usd=650_000, queue_name=queue.queue_name,
+    ) is None
+    duplicate = await repo.create_owned_highlight_story_media_canary_job(
+        owner, 1, profile, membership,
+        provider_namespace='apify:tiktok-highlights', authorization_reference='different-reference',
+        budget_micro_usd=650_000, queue_name=queue.queue_name,
+    )
+    assert duplicate and duplicate.id == first.id and not duplicate.created
+    messages = await queue.claim(5)
+    matching = [message for message in messages if message['message']['job_id'] == str(first.id)]
+    assert len(matching) == 1
+    await queue.archive(matching[0]['msg_id'])
+
+    authorization = await repo.claim_owned_highlight_canary_authorization(
+        owner, first.id, profile, membership, 'apify:tiktok-highlights',
+    )
+    assert authorization and authorization['status'] == 'claimed'
+    assert await repo.claim_owned_highlight_canary_authorization(
+        other, first.id, profile, membership, 'apify:tiktok-highlights',
+    ) is None
+    assert await repo.initialize_owned_highlight_provider_budget(owner, first.id, profile, 650_000)
+    discovery = await repo.reserve_owned_highlight_provider_invocation(
+        owner, first.id, profile, provider_namespace='apify:tiktok-highlights',
+        operation='collection_list', maximum_micro_usd=100_000, execution_key='collection_list',
+    )
+    assert discovery and discovery['status'] == 'reserved'
+    # Queue redelivery receives the original reservation, not another charge.
+    assert (await repo.reserve_owned_highlight_provider_invocation(
+        owner, first.id, profile, provider_namespace='apify:tiktok-highlights',
+        operation='collection_list', maximum_micro_usd=100_000, execution_key='collection_list',
+    ))['id'] == discovery['id']
+    stories = await repo.reserve_owned_highlight_provider_invocation(
+        owner, first.id, profile, provider_namespace='apify:tiktok-highlights',
+        operation='collection_items', maximum_micro_usd=550_000, execution_key='collection_items',
+    )
+    assert stories and await repo.reserve_owned_highlight_provider_invocation(
+        owner, first.id, profile, provider_namespace='apify:tiktok-highlights',
+        operation='collection_items', maximum_micro_usd=1, execution_key='extra',
+    ) is None
+    claimed = await repo.claim_owned_highlight_provider_invocation(owner, first.id, discovery['id'])
+    dispatched = await repo.mark_owned_highlight_provider_invocation_dispatched(
+        owner, first.id, discovery['id'], 'run_receipt_1',
+    )
+    assert claimed and dispatched and dispatched['status'] == 'dispatched'
+    assert (await repo.finish_owned_highlight_provider_invocation(
+        owner, first.id, discovery['id'], status='succeeded', receipt='run_receipt_1',
+    ))['status'] == 'succeeded'
+    assert (await repo.complete_owned_highlight_canary_authorization(
+        owner, first.id, status='consumed',
+    ))['status'] == 'consumed'
+    assert await repo.claim_owned_highlight_canary_authorization(
+        owner, first.id, profile, membership, 'apify:tiktok-highlights',
+    ) is None
+
+
 async def test_profile_highlight_sync_jobs_are_tenant_safe_atomic_and_coalesced(database):
     """Exercise the new job SQL, ownership joins, PGMQ and execution latch."""
     repo = Repository(database.pool)

@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     # Separate from metadata discovery. It remains off until a licensed live
     # descriptor provider and durable invocation ledger are approved.
     tiktok_highlights_media_enabled: bool = False
+    # A separate staged gate for the licensed asynchronous Actor canary. The
+    # general media flag alone must never register a paid provider.
+    tiktok_highlights_live_provider_enabled: bool = False
+    tiktok_highlights_canary_enabled: bool = False
+    tiktok_highlights_canary_operator_enabled: bool = False
+    apify_tiktok_highlights_token: str | None = None
+    tiktok_highlights_canary_actor_timeout_seconds: int = 180
+    tiktok_highlights_canary_poll_seconds: float = 5.0
     admin_telegram_user_ids: str = ""
     upstash_redis_rest_url: str | None = None
     upstash_redis_rest_token: str | None = None

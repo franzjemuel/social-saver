@@ -917,7 +917,8 @@ class Repository:
         )
 
     async def reserve_owned_highlight_provider_invocation(
-        self, user_id, job_id, profile_id, *, provider_namespace, operation, maximum_micro_usd,
+        self, user_id, job_id, profile_id, *, provider_namespace, operation,
+        maximum_micro_usd, execution_key=None,
     ):
         """Atomically reserve a non-reusable slice of a Highlight job budget.
 
@@ -927,7 +928,10 @@ class Repository:
         """
         if (not isinstance(maximum_micro_usd, int) or maximum_micro_usd <= 0
                 or operation not in {"collection_list", "collection_items"}
-                or not isinstance(provider_namespace, str) or not provider_namespace):
+                or not isinstance(provider_namespace, str) or not provider_namespace
+                or (execution_key is not None and (
+                    not isinstance(execution_key, str) or not execution_key or len(execution_key) > 128
+                ))):
             raise ValueError("invalid highlight provider invocation")
         async with self.pool.acquire() as con:
             async with con.transaction():
@@ -942,7 +946,17 @@ class Repository:
                        for update""",
                     job_id, user_id, profile_id,
                 )
-                if budget is None or budget["reserved_micro_usd"] + maximum_micro_usd > budget["budget_micro_usd"]:
+                if budget is None:
+                    return None
+                if execution_key is not None:
+                    existing = await con.fetchrow(
+                        """select * from highlight_provider_invocations
+                           where job_id=$1::uuid and execution_key=$2 for update""",
+                        job_id, execution_key,
+                    )
+                    if existing is not None:
+                        return existing
+                if budget["reserved_micro_usd"] + maximum_micro_usd > budget["budget_micro_usd"]:
                     return None
                 sequence = await con.fetchval(
                     "select coalesce(max(sequence)+1,0) from highlight_provider_invocations where job_id=$1::uuid",
@@ -950,9 +964,9 @@ class Repository:
                 )
                 invocation = await con.fetchrow(
                     """insert into highlight_provider_invocations
-                           (job_id,provider_namespace,operation,sequence,reserved_micro_usd,status)
-                       values($1::uuid,$2,$3,$4,$5,'reserved') returning *""",
-                    job_id, provider_namespace, operation, sequence, maximum_micro_usd,
+                           (job_id,provider_namespace,operation,sequence,reserved_micro_usd,status,execution_key)
+                       values($1::uuid,$2,$3,$4,$5,'reserved',$6) returning *""",
+                    job_id, provider_namespace, operation, sequence, maximum_micro_usd, execution_key,
                 )
                 await con.execute(
                     """update highlight_provider_job_budgets
@@ -974,6 +988,22 @@ class Repository:
             user_id, job_id, invocation_id,
         )
 
+    async def mark_owned_highlight_provider_invocation_dispatched(
+        self, user_id, job_id, invocation_id, receipt,
+    ):
+        """Persist one opaque Actor run receipt before polling its outcome."""
+        if not isinstance(receipt, str) or not receipt or len(receipt) > 512:
+            raise ValueError("invalid highlight provider receipt")
+        return await self.pool.fetchrow(
+            """update highlight_provider_invocations invocation
+               set status='dispatched',provider_run_receipt=$4
+               from highlight_provider_job_budgets budget
+               where invocation.id=$3::uuid and invocation.job_id=budget.job_id
+                 and budget.job_id=$2::uuid and budget.user_id=$1 and invocation.status='started'
+               returning invocation.*""",
+            user_id, job_id, invocation_id, receipt,
+        )
+
     async def finish_owned_highlight_provider_invocation(self, user_id, job_id, invocation_id, *, status, receipt=None, error_code=None):
         """Persist only normalized terminal state; raw actor output never enters SQL."""
         if status not in {"succeeded", "failed_known", "indeterminate"}:
@@ -983,9 +1013,48 @@ class Repository:
                set status=$4,provider_run_receipt=$5,error_code=$6,finished_at=now()
                from highlight_provider_job_budgets budget
                where invocation.id=$3::uuid and invocation.job_id=budget.job_id
-                 and budget.job_id=$2::uuid and budget.user_id=$1 and invocation.status='started'
+                 and budget.job_id=$2::uuid and budget.user_id=$1
+                 and invocation.status in ('started','dispatched')
                returning invocation.*""",
             user_id, job_id, invocation_id, status, receipt, error_code,
+        )
+
+    async def claim_owned_highlight_canary_authorization(
+        self, user_id, job_id, profile_id, membership_id, provider_namespace,
+    ):
+        """Claim one server-created video canary authorization for this job only.
+
+        A redelivered copy of the same job receives the same claim; another
+        job can never take an active or consumed authorization.
+        """
+        return await self.pool.fetchrow(
+            """update highlight_provider_canary_authorizations canary_auth
+               set status='claimed',claimed_job_id=$2::uuid,claimed_at=coalesce(claimed_at,now())
+               from archived_highlight_story_memberships membership
+               join archived_highlight_collections collection
+                 on collection.id=membership.archived_highlight_collection_id
+               join archived_profiles profile on profile.id=collection.archived_profile_id
+               where canary_auth.user_id=$1 and canary_auth.archived_profile_id=$3::uuid
+                 and canary_auth.archived_highlight_story_membership_id=$4::uuid
+                 and canary_auth.provider_namespace=$5
+                 and membership.id=canary_auth.archived_highlight_story_membership_id
+                 and membership.media_type='video' and profile.id=$3::uuid and profile.user_id=$1
+                 and ((canary_auth.status='authorized' and canary_auth.claimed_job_id=$2::uuid)
+                      or (canary_auth.status='claimed' and canary_auth.claimed_job_id=$2::uuid))
+               returning canary_auth.*""",
+            user_id, job_id, profile_id, membership_id, provider_namespace,
+        )
+
+    async def complete_owned_highlight_canary_authorization(self, user_id, job_id, *, status):
+        """Close a canary authorization without making it reusable."""
+        if status not in {"consumed", "failed_known", "indeterminate"}:
+            raise ValueError("invalid highlight canary authorization status")
+        return await self.pool.fetchrow(
+            """update highlight_provider_canary_authorizations
+               set status=$3,completed_at=now()
+               where user_id=$1 and claimed_job_id=$2::uuid and status='claimed'
+               returning *""",
+            user_id, job_id, status,
         )
 
     async def upsert_owned_highlight_story_media_assets(self, user_id, profile_id, membership_id, assets):
@@ -1050,6 +1119,26 @@ class Repository:
                where membership.id=$1::uuid and profile.id=$2::uuid and profile.user_id=$3
                  and profile.platform='tiktok'""",
             membership_id, profile_id, user_id,
+        )
+
+    async def has_owned_highlight_canary_candidate(self, user_id, profile_id, provider_namespace):
+        """Read-only operator preflight; it neither discovers nor creates data."""
+        return await self.pool.fetchval(
+            """select exists(
+                   select 1
+                   from archived_highlight_story_memberships membership
+                   join archived_highlight_collections collection
+                     on collection.id=membership.archived_highlight_collection_id
+                   join archived_profiles profile on profile.id=collection.archived_profile_id
+                   where profile.id=$2::uuid and profile.user_id=$1
+                     and collection.provider_namespace=$3 and membership.media_type='video'
+                     and not exists(
+                       select 1 from archived_highlight_story_media_assets asset
+                       where asset.archived_highlight_story_membership_id=membership.id
+                         and asset.stored_object_id is not null
+                     )
+               )""",
+            user_id, profile_id, provider_namespace,
         )
 
     async def list_owned_highlight_story_media_assets(self, user_id, profile_id, membership_id):
@@ -1152,6 +1241,87 @@ class Repository:
                               jsonb_build_object('profile_id',$3::uuid,'membership_id',$4::uuid),'mini_app')
                        returning id""",
                     user_id, chat_id, profile_id, membership_id,
+                )
+                await con.fetchval(
+                    "select * from pgmq.send($1::text,jsonb_build_object('version',1,'job_id',$2::text),0)",
+                    queue_name, str(job["id"]),
+                )
+                return ProfileMediaJob(job["id"], True)
+
+    async def create_owned_highlight_story_media_canary_job(
+        self,
+        user_id,
+        chat_id,
+        profile_id,
+        membership_id,
+        *,
+        provider_namespace,
+        authorization_reference,
+        budget_micro_usd,
+        queue_name,
+    ):
+        """Atomically authorize and enqueue one staging-only video canary.
+
+        This is intentionally an operator-only repository seam. Neither the
+        Mini App nor a PGMQ payload chooses its budget, provider, receipt, or
+        authorization reference.
+        """
+        if (
+            not isinstance(provider_namespace, str) or not provider_namespace
+            or not isinstance(authorization_reference, str)
+            or not 1 <= len(authorization_reference) <= 128
+            or not isinstance(budget_micro_usd, int)
+            or not 1 <= budget_micro_usd <= 650_000
+        ):
+            raise ValueError("invalid Highlight canary authorization")
+        async with self.pool.acquire() as con:
+            async with con.transaction():
+                await con.execute(
+                    "select pg_advisory_xact_lock(hashtextextended($1,0))",
+                    f"highlight-canary:{user_id}:{profile_id}:{membership_id}:{provider_namespace}",
+                )
+                target = await con.fetchrow(
+                    """select membership.id,collection.provider_namespace
+                       from archived_highlight_story_memberships membership
+                       join archived_highlight_collections collection
+                         on collection.id=membership.archived_highlight_collection_id
+                       join archived_profiles profile on profile.id=collection.archived_profile_id
+                       where membership.id=$1::uuid and profile.id=$2::uuid and profile.user_id=$3
+                         and collection.provider_namespace=$4 and membership.media_type='video'
+                       for update""",
+                    membership_id, profile_id, user_id, provider_namespace,
+                )
+                if target is None:
+                    return None
+                existing = await con.fetchrow(
+                    """select canary_auth.claimed_job_id
+                       from highlight_provider_canary_authorizations canary_auth
+                       where canary_auth.user_id=$1 and canary_auth.archived_profile_id=$2::uuid
+                         and canary_auth.archived_highlight_story_membership_id=$3::uuid
+                         and canary_auth.provider_namespace=$4
+                         and canary_auth.status in ('authorized','claimed')
+                       for update""",
+                    user_id, profile_id, membership_id, provider_namespace,
+                )
+                if existing is not None:
+                    if existing["claimed_job_id"] is None:
+                        return None
+                    return ProfileMediaJob(existing["claimed_job_id"], False)
+                job = await con.fetchrow(
+                    """insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel)
+                       values($1,$2,'archive_highlight_story_media',
+                              jsonb_build_object('profile_id',$3::uuid,'membership_id',$4::uuid),
+                              'system')
+                       returning id""",
+                    user_id, chat_id, profile_id, membership_id,
+                )
+                await con.execute(
+                    """insert into highlight_provider_canary_authorizations
+                           (user_id,archived_profile_id,archived_highlight_story_membership_id,
+                            provider_namespace,authorization_reference,budget_micro_usd,status,claimed_job_id)
+                       values($1,$2::uuid,$3::uuid,$4,$5,$6,'authorized',$7::uuid)""",
+                    user_id, profile_id, membership_id, provider_namespace,
+                    authorization_reference, budget_micro_usd, job["id"],
                 )
                 await con.fetchval(
                     "select * from pgmq.send($1::text,jsonb_build_object('version',1,'job_id',$2::text),0)",
