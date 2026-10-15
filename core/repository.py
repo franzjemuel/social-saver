@@ -1028,20 +1028,20 @@ class Repository:
         job can never take an active or consumed authorization.
         """
         return await self.pool.fetchrow(
-            """update highlight_provider_canary_authorizations authorization
+            """update highlight_provider_canary_authorizations canary_auth
                set status='claimed',claimed_job_id=$2::uuid,claimed_at=coalesce(claimed_at,now())
                from archived_highlight_story_memberships membership
                join archived_highlight_collections collection
                  on collection.id=membership.archived_highlight_collection_id
                join archived_profiles profile on profile.id=collection.archived_profile_id
-               where authorization.user_id=$1 and authorization.archived_profile_id=$3::uuid
-                 and authorization.archived_highlight_story_membership_id=$4::uuid
-                 and authorization.provider_namespace=$5
-                 and membership.id=authorization.archived_highlight_story_membership_id
+               where canary_auth.user_id=$1 and canary_auth.archived_profile_id=$3::uuid
+                 and canary_auth.archived_highlight_story_membership_id=$4::uuid
+                 and canary_auth.provider_namespace=$5
+                 and membership.id=canary_auth.archived_highlight_story_membership_id
                  and membership.media_type='video' and profile.id=$3::uuid and profile.user_id=$1
-                 and ((authorization.status='authorized' and authorization.claimed_job_id=$2::uuid)
-                      or (authorization.status='claimed' and authorization.claimed_job_id=$2::uuid))
-               returning authorization.*""",
+                 and ((canary_auth.status='authorized' and canary_auth.claimed_job_id=$2::uuid)
+                      or (canary_auth.status='claimed' and canary_auth.claimed_job_id=$2::uuid))
+               returning canary_auth.*""",
             user_id, job_id, profile_id, membership_id, provider_namespace,
         )
 
@@ -1274,12 +1274,12 @@ class Repository:
                 if target is None:
                     return None
                 existing = await con.fetchrow(
-                    """select authorization.claimed_job_id
-                       from highlight_provider_canary_authorizations authorization
-                       where authorization.user_id=$1 and authorization.archived_profile_id=$2::uuid
-                         and authorization.archived_highlight_story_membership_id=$3::uuid
-                         and authorization.provider_namespace=$4
-                         and authorization.status in ('authorized','claimed')
+                    """select canary_auth.claimed_job_id
+                       from highlight_provider_canary_authorizations canary_auth
+                       where canary_auth.user_id=$1 and canary_auth.archived_profile_id=$2::uuid
+                         and canary_auth.archived_highlight_story_membership_id=$3::uuid
+                         and canary_auth.provider_namespace=$4
+                         and canary_auth.status in ('authorized','claimed')
                        for update""",
                     user_id, profile_id, membership_id, provider_namespace,
                 )
