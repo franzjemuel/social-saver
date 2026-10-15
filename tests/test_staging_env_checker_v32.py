@@ -41,3 +41,11 @@ def test_api_strict_rejects_instagram_credentials():
     assert r.returncode == 3
     assert "INSTAGRAM_SESSION_PASSWORD" in r.stdout
     assert "nope" not in r.stdout
+
+def test_api_strict_rejects_worker_only_highlight_canary_token():
+    values={"DATABASE_URL":"x","TELEGRAM_BOT_TOKEN":"x","R2_ACCOUNT_ID":"x","R2_ACCESS_KEY_ID":"x","R2_SECRET_ACCESS_KEY":"x","R2_BUCKET":"x","APIFY_TIKTOK_HIGHLIGHTS_TOKEN":"worker-only"}
+    env={"PATH":os.environ.get("PATH",""),"SOCIAL_SAVER_ROLE":"api",**values}
+    r=subprocess.run([sys.executable,str(SCRIPT),"--strict"],env=env,text=True,capture_output=True)
+    assert r.returncode == 3
+    assert "APIFY_TIKTOK_HIGHLIGHTS_TOKEN" in r.stdout
+    assert "worker-only" not in r.stdout

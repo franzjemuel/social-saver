@@ -22,6 +22,12 @@ from apps.worker.processors.profile_highlight_sync import process_sync_profile_h
 from apps.worker.processors.highlight_story_media import (
     process_archive_highlight_story_media, TikTokHighlightStoryMediaFailure,
 )
+from apps.worker.processors.highlight_canary_execution import HighlightCanaryExecutionPolicy
+from providers.tiktok.apify_highlight_canary import (
+    ApifyAsyncHighlightActorClient,
+    ApifyHighlightCanaryMediaProvider,
+)
+from providers.tiktok.apify_highlights_provider import PROVIDER_NAMESPACE as APIFY_HIGHLIGHTS_NAMESPACE
 from apps.worker.processors.profile_photo_delivery import process_deliver_profile_photos
 from providers.tiktok.validation import TikTokProfileValidationFailure
 from core.observability import init_observability, capture_job_exception
@@ -74,6 +80,28 @@ async def complete_highlight_story_media_failure(repo, queue, msg, job_id, exc):
     """Fail disabled/manual-only Highlight media work without bot side effects."""
     await repo.fail_job(job_id, exc.code.upper(), exc.code)
     await queue.archive(msg["msg_id"])
+
+
+def staging_highlight_canary_provider():
+    """Register the paid bridge only under all server-owned staging gates."""
+    if not (
+        settings.app_env == "staging"
+        and settings.tiktok_highlights_media_enabled
+        and settings.tiktok_highlights_live_provider_enabled
+        and settings.tiktok_highlights_canary_enabled
+        and settings.tiktok_highlights_canary_operator_enabled
+        and settings.apify_tiktok_highlights_token
+    ):
+        return None, None
+    client = ApifyAsyncHighlightActorClient(
+        settings.apify_tiktok_highlights_token,
+        actor_timeout_seconds=settings.tiktok_highlights_canary_actor_timeout_seconds,
+        poll_seconds=settings.tiktok_highlights_canary_poll_seconds,
+    )
+    return (
+        ApifyHighlightCanaryMediaProvider(client),
+        HighlightCanaryExecutionPolicy(APIFY_HIGHLIGHTS_NAMESPACE),
+    )
 
 async def main():
     init_observability("media-worker")
@@ -181,7 +209,10 @@ async def main():
                     success_message = None
                 elif job["job_type"] == "archive_highlight_story_media":
                     async with provider_concurrency.for_platform("tiktok"):
-                        result = await process_archive_highlight_story_media(job, repo)
+                        provider, policy = staging_highlight_canary_provider()
+                        result = await process_archive_highlight_story_media(
+                            job, repo, provider=provider, provider_execution_policy=policy,
+                        )
                     success_message = None
                 else:
                     raise ValueError(f"Unknown job type: {job['job_type']}")

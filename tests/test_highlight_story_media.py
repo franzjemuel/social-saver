@@ -7,11 +7,13 @@ from fastapi import HTTPException
 
 import apps.api.main as api
 from apps.worker.main import complete_highlight_story_media_failure
+from apps.worker.main import staging_highlight_canary_provider
 from apps.worker.processors.highlight_story_media import (
     HighlightProviderExecutionPolicy,
     TikTokHighlightStoryMediaFailure,
     process_archive_highlight_story_media,
 )
+from apps.worker.processors.highlight_canary_execution import HighlightCanaryExecutionPolicy
 from core.highlight_media import HighlightStoryMediaService
 from core.media_download import DownloadedAsset
 from providers.base import HighlightStoryMediaDescriptor, SourceUnavailable
@@ -20,6 +22,7 @@ from providers.tiktok.apify_highlight_story_media_provider import (
     PROVIDER_NAMESPACE,
 )
 from providers.tiktok.apify_highlights import HighlightStory, HighlightStoryPage
+from providers.tiktok.apify_highlight_canary import ApifyHighlightCanaryMediaProvider
 
 
 PROFILE = UUID("11111111-1111-1111-1111-111111111111")
@@ -225,6 +228,91 @@ async def test_synthetic_apify_story_to_private_object_pipeline_keeps_descriptor
 
 
 @pytest.mark.asyncio
+async def test_live_canary_bridge_runs_two_receipted_operations_then_persists_one_video(tmp_path):
+    """Synthetic Actor responses exercise the exact staged paid-provider seam."""
+    class CanaryRepo(Repo):
+        def __init__(self):
+            super().__init__()
+            self.operations = {}
+            self.authorization = []
+
+        async def get_owned_highlight_story_media_target(self, *_):
+            return {
+                "username": "owner", "provider_namespace": PROVIDER_NAMESPACE,
+                "provider_collection_id": "collection", "provider_item_id": "story", "media_type": "video",
+            }
+
+        async def claim_owned_highlight_canary_authorization(self, *_):
+            return {"budget_micro_usd": 650_000}
+
+        async def complete_owned_highlight_canary_authorization(self, *_args, **kwargs):
+            self.authorization.append(kwargs["status"])
+            return {"status": kwargs["status"]}
+
+        async def initialize_owned_highlight_provider_budget(self, *_):
+            return {"id": "budget"}
+
+        async def reserve_owned_highlight_provider_invocation(self, *_args, **kwargs):
+            key = kwargs["execution_key"]
+            if key not in self.operations:
+                self.operations[key] = {"id": key, "status": "reserved", "provider_run_receipt": None}
+            return self.operations[key]
+
+        async def claim_owned_highlight_provider_invocation(self, *_args):
+            row = self.operations[_args[-1]]
+            if row["status"] != "reserved":
+                return None
+            row["status"] = "started"
+            return row
+
+        async def mark_owned_highlight_provider_invocation_dispatched(self, *_args):
+            row = self.operations[_args[-2]]
+            row.update(status="dispatched", provider_run_receipt=_args[-1])
+            return row
+
+        async def finish_owned_highlight_provider_invocation(self, *_args, **kwargs):
+            row = self.operations[_args[-1]]
+            row["status"] = kwargs["status"]
+            if kwargs.get("receipt"):
+                row["provider_run_receipt"] = kwargs["receipt"]
+            return row
+
+    class Actor:
+        def __init__(self):
+            self.started = []
+
+        async def start_run(self, payload, *, maximum_micro_usd):
+            self.started.append((payload, maximum_micro_usd))
+            return f"run_{len(self.started)}"
+
+        async def collect_run(self, receipt):
+            if receipt == "run_1":
+                return [{"unique_id": "owner", "highlight_id": "collection", "post_count": 1}]
+            return [{
+                "highlight_id": "collection", "type": "video", "video_id": "story",
+                "video_url": "https://ephemeral.invalid/video", "duration": 2.0,
+            }]
+
+    repo = CanaryRepo()
+    actor = Actor()
+    result = await process_archive_highlight_story_media(
+        {"id": "job", "user_id": "tenant", "input": {"profile_id": str(PROFILE), "membership_id": str(MEMBERSHIP)}},
+        repo,
+        ApifyHighlightCanaryMediaProvider(actor),
+        Downloader(),
+        Service(),
+        execution_enabled=True,
+        provider_execution_policy=HighlightCanaryExecutionPolicy(PROVIDER_NAMESPACE),
+    )
+    assert result["attached"] == result["uploaded"] == 1
+    assert result["outcome"] == "complete"
+    assert repo.authorization == ["consumed"]
+    assert [amount for _, amount in actor.started] == [100_000, 550_000]
+    assert sorted(row["status"] for row in repo.operations.values()) == ["succeeded", "succeeded"]
+    assert "ephemeral.invalid" not in repr(repo.operations)
+
+
+@pytest.mark.asyncio
 async def test_partial_story_failure_preserves_other_position_and_records_safe_code():
     repo = Repo()
     second = UUID("44444444-4444-4444-4444-444444444444")
@@ -352,3 +440,13 @@ async def test_playback_is_tenant_scoped_and_gated_queue_does_not_enqueue(monkey
 def test_highlight_schema_never_persists_descriptor_columns():
     migration = Path("supabase/migrations/025_highlight_story_media.sql").read_text()
     assert "source_url" not in migration and "descriptor" in migration
+
+
+def test_worker_never_registers_live_highlight_provider_while_any_server_gate_is_disabled(monkeypatch):
+    monkeypatch.setattr(api.settings, "app_env", "staging")
+    monkeypatch.setattr(api.settings, "tiktok_highlights_media_enabled", True)
+    monkeypatch.setattr(api.settings, "tiktok_highlights_live_provider_enabled", True)
+    monkeypatch.setattr(api.settings, "tiktok_highlights_canary_enabled", True)
+    monkeypatch.setattr(api.settings, "tiktok_highlights_canary_operator_enabled", False)
+    monkeypatch.setattr(api.settings, "apify_tiktok_highlights_token", "worker-only-token")
+    assert staging_highlight_canary_provider() == (None, None)

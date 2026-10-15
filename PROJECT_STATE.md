@@ -129,6 +129,23 @@ Updated for v3.8.
 - Ambiguous dispatched calls become durable `indeterminate` records and do not
   free budget for automatic retry. No Apify provider is registered or enabled.
 
+## TikTok Highlight one-Story live canary — review candidate
+
+- Migration 027 adds an operator-created, single-use authorization for one
+  tenant-owned Highlight **video** and extends the invocation ledger with a
+  `dispatched` state holding only an opaque Actor run receipt. It never stores
+  tokens, raw responses, temporary descriptors, signed URLs, or media bytes.
+- A staging-only worker factory remains disabled unless the media, live-provider,
+  canary, and operator gates are all enabled. Its two Actor operations reserve
+  at most 100,000 and 550,000 micro-USD respectively, giving a hard requested
+  aggregate cap of $0.65 for one authorization. Queue redelivery may poll an
+  existing receipted run but cannot start a replacement paid run.
+- The normal worker download/R2/playback path is exercised only with synthetic
+  Actor responses in tests. There has been no paid call, feature activation,
+  deployment, or hosted Highlight-media acceptance. Commercial-use approval,
+  test-media authorization, staging rollout of migration 027, and explicit
+  $0.65 spend approval remain mandatory gates.
+
 ## TikTok Highlight Story media archive — synthetic-only draft
 
 - Migration 025 models ordered Story media positions backed by the existing

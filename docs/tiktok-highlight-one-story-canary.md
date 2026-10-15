@@ -1,8 +1,9 @@
 # TikTok Highlight one-Story staging acceptance
 
 This runbook is intentionally inactive until provider licensing, migrations
-025 and 026, durable per-invocation budget accounting, and an explicit staging
-authorization have all been approved. It never authorizes production use.
+025 through 027, durable per-invocation budget accounting, and an explicit
+staging authorization have all been approved. It never authorizes production
+use.
 
 ## Required merge and rollout order
 
@@ -16,14 +17,17 @@ authorization have all been approved. It never authorizes production use.
 3. Apply immutable migration 026 before any approved external provider
    invocation. It supplies the budget/invocation ledger used to make ambiguous
    external outcomes terminal rather than automatically repeatable.
-4. Keep both Highlight feature gates off through these merges and migrations.
+4. Apply immutable migration 027 before the canary. It binds exactly one owned
+   video Story to one operator-created authorization and adds the durable
+   asynchronous Actor-run `dispatched` receipt state.
+5. Keep all Highlight feature gates off through these merges and migrations.
    The bridge remains unregistered until a separate provider-license and
-   spending authorization enables a reviewed worker factory.
+   spending authorization enables the reviewed worker factory.
 
 ## Preconditions
 
-1. Staging API and worker run the reviewed feature commit; migrations 025 and
-   026 are applied through the normal controlled release procedure and their
+1. Staging API and worker run the reviewed feature commit; migrations 025,
+   026, and 027 are applied through the normal controlled release procedure and their
    schema head is verified before the feature gates change.
 2. The worker has private R2 write access; API credentials remain read/presign
    only. Verify a bounded storage probe separately.
@@ -35,19 +39,40 @@ authorization have all been approved. It never authorizes production use.
 
 ## One-Story procedure
 
-1. Submit the approved test profile, `theyuh_lvsh`, to the manually authorized
-   discovery flow. Do not schedule a rescan.
-2. From the discovered `ako` collection, select exactly one provider-returned
-   video Story in worker memory. Do not put its descriptor in a queue payload,
-   database row, log, browser response, or ticket.
-3. Claim the durable provider invocation before each Actor run. If a provider
-   timeout is ambiguous, mark it indeterminate and stop; do not retry it.
-4. Download only the selected Story to worker temporary storage; validate
+1. Record the commercial-use approval, the public test-media authorization,
+   and a one-time operator authorization reference. Explicitly approve a
+   maximum aggregate charge of **$0.65**; this is a provider-request cap, not
+   a guarantee of final billing.
+2. Ensure only the staging worker receives the restricted Actor token, then
+   set all four server-owned staging gates: media, live provider, canary, and
+   operator canary. API and bot remain without the token. Do not place any
+   value in browser configuration.
+3. Use the normal owned Highlight metadata to select one pre-indexed **video**
+   membership from the approved collection. The operator command accepts only
+   owned internal target identifiers and a non-secret authorization reference:
+
+   ```sh
+   python -m ops.queue_highlight_story_canary \
+     --user-id '<owned-user-uuid>' --telegram-chat-id '<owned-chat-id>' \
+     --profile-id '<owned-profile-uuid>' --membership-id '<owned-video-membership-uuid>' \
+     --authorization-reference '<approved-change-record>'
+   ```
+
+   It atomically creates one authorization, one normal media job, and one PGMQ
+   message. A duplicate command returns the same pending job; it cannot create
+   another authorization or queue message.
+4. The worker reserves at most $0.10 for `collection_list` and $0.55 for
+   `collection_items` before dispatch. It writes an opaque Actor run ID to the
+   ledger immediately after each successful dispatch. A timeout before a
+   receipt becomes indeterminate; a timeout after a receipt does not start a
+   replacement run. Stop for operator reconciliation rather than retrying.
+5. Download only the selected Story to worker temporary storage; validate
    bytes, size, type, and SHA-256 before private R2 persistence.
-5. Verify exactly one ordered Highlight media-asset attachment and one shared
+6. Verify exactly one ordered Highlight media-asset attachment and one shared
    stored object reference. Mint one owner-authorized short-lived playback
    capability and validate playback without recording the URL.
-6. Stop. Do not archive another Story, collection, photo, or Telegram delivery.
+7. Stop. Disable the four gates. Do not archive another Story, collection,
+   photo, or Telegram delivery.
 
 ## Evidence to retain
 
