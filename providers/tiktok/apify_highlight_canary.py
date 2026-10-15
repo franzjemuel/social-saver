@@ -32,6 +32,10 @@ from providers.tiktok.apify_highlights_provider import PROVIDER_NAMESPACE
 
 
 _RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+# The canary deliberately does not infer pagination.  The observed target has
+# 25 items, so one bounded request of 30 is sufficient; anything larger is a
+# separate, reviewed pagination increment.
+CANARY_MAX_STORIES_PER_COLLECTION = 30
 
 
 class ApifyCanaryKnownFailure(TikTokHighlightsPocError):
@@ -188,8 +192,13 @@ class ApifyHighlightCanaryMediaProvider:
     requires_execution_policy = True
     requires_live_execution_broker = True
 
-    def __init__(self, client: ApifyAsyncHighlightActorClient, *, posts_per_page: int = 10):
-        if not 1 <= posts_per_page <= 30:
+    def __init__(
+        self,
+        client: ApifyAsyncHighlightActorClient,
+        *,
+        posts_per_page: int = CANARY_MAX_STORIES_PER_COLLECTION,
+    ):
+        if posts_per_page != CANARY_MAX_STORIES_PER_COLLECTION:
             raise ValueError("invalid Highlight Story page size")
         self._client = client
         self._posts_per_page = posts_per_page
@@ -214,6 +223,15 @@ class ApifyHighlightCanaryMediaProvider:
         )
         if collection is None:
             raise HighlightCollectionUnavailable("TikTok Highlight collection was unavailable")
+        if (
+            collection.reported_item_count is None
+            or collection.reported_item_count <= 0
+            or collection.reported_item_count > self._posts_per_page
+        ):
+            # Collection metadata is not proof of upstream completeness, but
+            # without a bounded, matching count this canary cannot safely
+            # choose a Story from one non-paginated Actor result.
+            raise HighlightIncompleteResponse("TikTok Highlight collection exceeds the canary bound")
         story_rows = await execution.invoke(
             "collection_items",
             ApifyTikTokHighlightsPoc.stories_input(
@@ -221,6 +239,8 @@ class ApifyHighlightCanaryMediaProvider:
             ),
             self._client,
         )
+        if not isinstance(story_rows, list) or len(story_rows) > self._posts_per_page:
+            raise HighlightIncompleteResponse("TikTok Highlight provider returned an oversized dataset")
         page = normalize_stories(
             story_rows,
             collection_id=provider_collection_id,

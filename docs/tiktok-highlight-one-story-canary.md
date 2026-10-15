@@ -36,6 +36,36 @@ use.
 4. A server-owned job budget reserves no more than $0.65 total: up to $0.10
    for collection discovery and up to $0.55 for one collection enumeration.
    These are hard requested caps, not a prediction of final charges.
+5. A real, tenant-owned **video** Highlight membership already exists. This
+   canary never inserts a membership from operator input and never fabricates
+   one from fixture data.
+
+## Membership preflight
+
+The first live canary has a deliberate metadata prerequisite. The existing
+Highlight sync remains synthetic-only, so it cannot be enabled as an implicit
+preflight or quietly make a paid Actor call. Before the media canary, obtain a
+separate written approval for one metadata-only provider discovery and use the
+approved worker reconciliation path to persist its validated collection
+snapshot for the tenant. That approved metadata operation must be recorded and
+reviewed independently; it is not authorized by this runbook.
+
+After that metadata operation, an authorized staging operator must run the
+read-only preflight before changing canary gates:
+
+```sh
+python -m ops.queue_highlight_story_canary \
+  --user-id '<owned-user-uuid>' --profile-id '<owned-profile-uuid>' --dry-run
+```
+
+It performs no provider call, no queue mutation, and no media download. It
+prints `canary_preflight=eligible` only if a tenant-owned, unarchived video
+membership from the approved provider namespace exists. Otherwise it prints
+`canary_preflight=no_eligible_membership`; stop there. Do not insert database
+rows manually or substitute fixture identifiers. To verify a specifically
+chosen Story, add its internal membership identifier to the same dry run. The
+identifier must be obtained through the authorized operator database session,
+never from browser input or a public API response.
 
 ## One-Story procedure
 
@@ -47,9 +77,10 @@ use.
    set all four server-owned staging gates: media, live provider, canary, and
    operator canary. API and bot remain without the token. Do not place any
    value in browser configuration.
-3. Use the normal owned Highlight metadata to select one pre-indexed **video**
-   membership from the approved collection. The operator command accepts only
-   owned internal target identifiers and a non-secret authorization reference:
+3. Use the successful preflight and the authorized operator database session
+   to select one pre-indexed **video** membership from the approved collection.
+   The operator command accepts only owned internal target identifiers and a
+   non-secret authorization reference:
 
    ```sh
    python -m ops.queue_highlight_story_canary \
@@ -61,11 +92,15 @@ use.
    It atomically creates one authorization, one normal media job, and one PGMQ
    message. A duplicate command returns the same pending job; it cannot create
    another authorization or queue message.
-4. The worker reserves at most $0.10 for `collection_list` and $0.55 for
-   `collection_items` before dispatch. It writes an opaque Actor run ID to the
-   ledger immediately after each successful dispatch. A timeout before a
-   receipt becomes indeterminate; a timeout after a receipt does not start a
-   replacement run. Stop for operator reconciliation rather than retrying.
+4. The worker requests at most 30 Stories in one bounded enumeration. It will
+   process the known 25-Story `ako` collection only when the provider returns
+   exactly its reported unique count. A missing count, a short response, or a
+   collection above 30 fails closed; pagination is not inferred. It reserves
+   at most $0.10 for `collection_list` and $0.55 for `collection_items` before
+   dispatch. It writes an opaque Actor run ID to the ledger immediately after
+   each successful dispatch. A timeout before a receipt becomes indeterminate;
+   a timeout after a receipt does not start a replacement run. Stop for
+   operator reconciliation rather than retrying.
 5. Download only the selected Story to worker temporary storage; validate
    bytes, size, type, and SHA-256 before private R2 persistence.
 6. Verify exactly one ordered Highlight media-asset attachment and one shared

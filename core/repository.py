@@ -1121,6 +1121,26 @@ class Repository:
             membership_id, profile_id, user_id,
         )
 
+    async def has_owned_highlight_canary_candidate(self, user_id, profile_id, provider_namespace):
+        """Read-only operator preflight; it neither discovers nor creates data."""
+        return await self.pool.fetchval(
+            """select exists(
+                   select 1
+                   from archived_highlight_story_memberships membership
+                   join archived_highlight_collections collection
+                     on collection.id=membership.archived_highlight_collection_id
+                   join archived_profiles profile on profile.id=collection.archived_profile_id
+                   where profile.id=$2::uuid and profile.user_id=$1
+                     and collection.provider_namespace=$3 and membership.media_type='video'
+                     and not exists(
+                       select 1 from archived_highlight_story_media_assets asset
+                       where asset.archived_highlight_story_membership_id=membership.id
+                         and asset.stored_object_id is not null
+                     )
+               )""",
+            user_id, profile_id, provider_namespace,
+        )
+
     async def list_owned_highlight_story_media_assets(self, user_id, profile_id, membership_id):
         """Internal worker-only pending assets. No descriptor is stored here."""
         return await self.pool.fetch(

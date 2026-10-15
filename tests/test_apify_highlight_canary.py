@@ -16,6 +16,7 @@ from providers.tiktok.apify_highlight_canary import (
     ApifyCanaryKnownFailure,
     ApifyHighlightCanaryMediaProvider,
 )
+from providers.tiktok.apify_highlights import HighlightIncompleteResponse
 from providers.tiktok.apify_highlights_provider import PROVIDER_NAMESPACE
 
 
@@ -37,6 +38,20 @@ STORIES = [
         "video_url": "https://descriptor.invalid/temporary.mp4",
     }
 ]
+
+
+def _stories(count: int):
+    return [
+        {
+            "highlight_id": "collection-a",
+            "type": "video",
+            "video_id": f"story-{index}",
+            "create_time": 1724980000 - index,
+            "duration": 4.2,
+            "video_url": "https://descriptor.invalid/temporary.mp4",
+        }
+        for index in range(count)
+    ]
 
 
 @pytest.mark.asyncio
@@ -203,3 +218,59 @@ async def test_provider_discovers_then_enumerates_exact_story_without_persisting
     assert [(item.position, item.asset_type) for item in descriptors] == [(0, "video")]
     assert [name for name, _ in executor.operations] == ["collection_list", "collection_items"]
     assert "descriptor.invalid" not in repr(executor.operations)
+
+
+@pytest.mark.asyncio
+async def test_canary_provider_uses_one_bounded_request_for_complete_25_story_collection():
+    collection = [{**COLLECTIONS[0], "post_count": 25}]
+    stories = _stories(25)
+
+    class Executor:
+        def __init__(self):
+            self.operations = []
+
+        async def invoke(self, operation, payload, _client):
+            self.operations.append((operation, payload))
+            return collection if operation == "collection_list" else stories
+
+    executor = Executor()
+    provider = ApifyHighlightCanaryMediaProvider(FakeActor())
+    descriptors = await provider.resolve_story_media(
+        username="example_user", provider_namespace=PROVIDER_NAMESPACE,
+        provider_collection_id="collection-a", provider_item_id="story-24", execution=executor,
+    )
+    assert descriptors[0].asset_type == "video"
+    assert executor.operations[1][1]["postsPerPage"] == 30
+
+
+@pytest.mark.asyncio
+async def test_canary_provider_rejects_incomplete_or_oversized_collection_without_using_story_as_complete():
+    class Executor:
+        def __init__(self, collection_count, stories):
+            self.collection_count = collection_count
+            self.stories = stories
+            self.operations = []
+
+        async def invoke(self, operation, payload, _client):
+            self.operations.append(operation)
+            if operation == "collection_list":
+                return [{**COLLECTIONS[0], "post_count": self.collection_count}]
+            return self.stories
+
+    provider = ApifyHighlightCanaryMediaProvider(FakeActor())
+    incomplete = Executor(25, _stories(24))
+    with pytest.raises(HighlightIncompleteResponse):
+        await provider.resolve_story_media(
+            username="example_user", provider_namespace=PROVIDER_NAMESPACE,
+            provider_collection_id="collection-a", provider_item_id="story-0", execution=incomplete,
+        )
+    assert incomplete.operations == ["collection_list", "collection_items"]
+
+    oversized = Executor(31, _stories(31))
+    with pytest.raises(HighlightIncompleteResponse):
+        await provider.resolve_story_media(
+            username="example_user", provider_namespace=PROVIDER_NAMESPACE,
+            provider_collection_id="collection-a", provider_item_id="story-0", execution=oversized,
+        )
+    # Fail before a bounded request could be incorrectly treated as complete.
+    assert oversized.operations == ["collection_list"]

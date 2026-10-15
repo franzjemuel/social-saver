@@ -708,6 +708,12 @@ async def test_highlight_canary_authorization_is_tenant_scoped_single_use_and_ca
                (archived_highlight_collection_id,provider_namespace,provider_item_id,provider_position,media_type)
            values($1,'apify:tiktok-highlights','canary-story',0,'video') returning id""", collection,
     )
+    assert await repo.has_owned_highlight_canary_candidate(
+        owner, profile, 'apify:tiktok-highlights',
+    ) is True
+    assert await repo.has_owned_highlight_canary_candidate(
+        other, profile, 'apify:tiktok-highlights',
+    ) is False
     first = await repo.create_owned_highlight_story_media_canary_job(
         owner, 1, profile, membership,
         provider_namespace='apify:tiktok-highlights', authorization_reference='approved-test-canary',
