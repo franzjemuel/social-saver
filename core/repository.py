@@ -1291,7 +1291,7 @@ class Repository:
                     """insert into jobs(user_id,telegram_chat_id,job_type,input,source_channel)
                        values($1,$2,'archive_highlight_story_media',
                               jsonb_build_object('profile_id',$3::uuid,'membership_id',$4::uuid),
-                              'operator_canary')
+                              'system')
                        returning id""",
                     user_id, chat_id, profile_id, membership_id,
                 )
